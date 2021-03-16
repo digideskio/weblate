@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,20 +14,12 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.db.models.fields import CharField
-from django.core.exceptions import ValidationError
-from django.utils.translation import ugettext as _
-import re
+from django.db.models import CharField
 
-
-def validate_re(value):
-    try:
-        re.compile(value)
-    except re.error as error:
-        raise ValidationError(_('Failed to compile: {0}').format(error))
+from weblate.utils.validators import validate_re
 
 
 class RegexField(CharField):

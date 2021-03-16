@@ -1,9 +1,8 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,16 +15,18 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
 import os
 import sys
 
 if __name__ == "__main__":
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "weblate.settings")
-    os.environ['DJANGO_IS_MANAGEMENT_COMMAND'] = '1'
+    default = "weblate.settings"
+    if len(sys.argv) >= 2 and sys.argv[1] == "test":
+        default = "weblate.settings_test"
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", default)
 
-    from django.core.management import execute_from_command_line
+    from weblate.runner import main
 
-    execute_from_command_line(sys.argv)
+    main(developer_mode=True)

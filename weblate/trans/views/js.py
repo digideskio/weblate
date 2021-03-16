@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,249 +14,193 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.shortcuts import render, get_object_or_404
-from django.http import HttpResponse, HttpResponseBadRequest, Http404
-from django.core.exceptions import PermissionDenied
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
+from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.shortcuts import get_object_or_404, render
+from django.utils.translation import gettext as _
+from django.views.decorators.cache import cache_control
+from django.views.decorators.http import require_POST
 
-from weblate.trans.models import Unit, Check, Change
-from weblate.trans.machine import MACHINE_TRANSLATION_SERVICES
-from weblate.trans.views.helper import (
-    get_project, get_subproject, get_translation
-)
-from weblate.trans.forms import PriorityForm, CheckFlagsForm
-from weblate.trans.validators import EXTRA_FLAGS
-from weblate.trans.checks import CHECKS
-from weblate.trans.permissions import (
-    can_use_mt, can_see_repository_status, can_ignore_check,
-)
-
-from urllib import urlencode
-import json
-
-
-def get_string(request, unit_id):
-    '''
-    AJAX handler for getting raw string.
-    '''
-    unit = get_object_or_404(Unit, pk=int(unit_id))
-    unit.check_acl(request)
-
-    try:
-        plural = int(request.GET.get('plural', '0'))
-    except ValueError:
-        plural = 0
-
-    return HttpResponse(unit.get_source_plurals()[plural])
+from weblate.checks.flags import Flags
+from weblate.checks.models import Check
+from weblate.machinery import MACHINE_TRANSLATION_SERVICES
+from weblate.machinery.base import MachineTranslationError
+from weblate.trans.models import Change, Unit
+from weblate.trans.util import sort_unicode
+from weblate.utils.errors import report_error
+from weblate.utils.views import get_component, get_project, get_translation
 
 
-@login_required
-def translate(request, unit_id):
-    '''
-    AJAX handler for translating.
-    '''
-    unit = get_object_or_404(Unit, pk=int(unit_id))
-    unit.check_acl(request)
-    if not can_use_mt(request.user, unit.translation):
+def handle_machinery(request, service, unit, search=None):
+    if not request.user.has_perm("machinery.view", unit.translation):
         raise PermissionDenied()
-
-    service_name = request.GET.get('service', 'INVALID')
-
-    if service_name not in MACHINE_TRANSLATION_SERVICES:
-        return HttpResponseBadRequest('Invalid service specified')
-
-    translation_service = MACHINE_TRANSLATION_SERVICES[service_name]
 
     # Error response
     response = {
-        'responseStatus': 500,
-        'service': translation_service.name,
-        'responseDetails': '',
-        'translations': [],
-        'lang': unit.translation.language.code,
-        'dir': unit.translation.language.direction,
+        "responseStatus": 500,
+        "service": service,
+        "responseDetails": "",
+        "translations": [],
+        "lang": unit.translation.language.code,
+        "dir": unit.translation.language.direction,
     }
 
     try:
-        response['translations'] = translation_service.translate(
-            unit.translation.language.code,
-            unit.get_source_plurals()[0],
-            unit,
-            request.user
-        )
-        response['responseStatus'] = 200
-    except Exception as exc:
-        response['responseDetails'] = '%s: %s' % (
-            exc.__class__.__name__,
-            str(exc)
-        )
+        translation_service = MACHINE_TRANSLATION_SERVICES[service]
+        response["service"] = translation_service.name
+    except KeyError:
+        response["responseDetails"] = _("Service is currently not available.")
+    else:
+        try:
+            response["translations"] = translation_service.translate(
+                unit, request.user, search=search
+            )
+            response["responseStatus"] = 200
+        except MachineTranslationError as exc:
+            response["responseDetails"] = str(exc)
+        except Exception as error:
+            report_error()
+            response["responseDetails"] = f"{error.__class__.__name__}: {error}"
 
-    return HttpResponse(
-        json.dumps(response),
-        content_type='application/json'
-    )
+    return JsonResponse(data=response)
 
 
-def get_unit_changes(request, unit_id):
-    '''
-    Returns unit's recent changes.
-    '''
+@require_POST
+def translate(request, unit_id, service):
+    """AJAX handler for translating."""
+    if service not in MACHINE_TRANSLATION_SERVICES:
+        raise Http404("Invalid service specified")
+
     unit = get_object_or_404(Unit, pk=int(unit_id))
-    unit.check_acl(request)
+    return handle_machinery(request, service, unit)
+
+
+@require_POST
+def memory(request, unit_id):
+    """AJAX handler for translation memory."""
+    unit = get_object_or_404(Unit, pk=int(unit_id))
+    query = request.POST.get("q")
+    if not query:
+        return HttpResponseBadRequest("Missing search string")
+
+    return handle_machinery(request, "weblate-translation-memory", unit, search=query)
+
+
+def get_unit_translations(request, unit_id):
+    """Return unit's other translations."""
+    unit = get_object_or_404(Unit, pk=int(unit_id))
+    user = request.user
+    user.check_access_component(unit.translation.component)
 
     return render(
         request,
-        'js/changes.html',
+        "js/translations.html",
         {
-            'last_changes': unit.change_set.all()[:10],
-            'last_changes_url': urlencode(unit.translation.get_kwargs()),
-        }
+            "units": sort_unicode(
+                unit.source_unit.unit_set.exclude(pk=unit.pk)
+                .prefetch()
+                .prefetch_full(),
+                lambda unit: "{}-{}".format(
+                    user.profile.get_language_order(unit.translation.language),
+                    unit.translation.language,
+                ),
+            )
+        },
     )
 
 
+@require_POST
 @login_required
 def ignore_check(request, check_id):
     obj = get_object_or_404(Check, pk=int(check_id))
 
-    if not can_ignore_check(request.user, obj.project):
+    if not request.user.has_perm("unit.check", obj):
         raise PermissionDenied()
 
-    obj.project.check_acl(request)
     # Mark check for ignoring
-    obj.set_ignore()
+    obj.set_dismiss("revert" not in request.GET)
     # response for AJAX
-    return HttpResponse('ok')
+    return HttpResponse("ok")
+
+
+@require_POST
+@login_required
+def ignore_check_source(request, check_id):
+    obj = get_object_or_404(Check, pk=int(check_id))
+    unit = obj.unit.source_unit
+
+    if not request.user.has_perm("unit.check", obj) or not request.user.has_perm(
+        "source.edit", unit.translation.component
+    ):
+        raise PermissionDenied()
+
+    # Mark check for ignoring
+    ignore = obj.check_obj.ignore_string
+    flags = Flags(unit.extra_flags)
+    if ignore not in flags:
+        flags.merge(ignore)
+        unit.extra_flags = flags.format()
+        unit.save(same_content=True)
+
+    # response for AJAX
+    return HttpResponse("ok")
+
+
+def git_status_shared(request, obj, repositories):
+    if not request.user.has_perm("meta:vcs.status", obj):
+        raise PermissionDenied()
+
+    changes = obj.change_set.filter(action__in=Change.ACTIONS_REPOSITORY).order()[:10]
+
+    return render(
+        request,
+        "js/git-status.html",
+        {
+            "object": obj,
+            "changes": changes.prefetch(),
+            "repositories": repositories,
+            "pending_units": obj.count_pending_units,
+            "outgoing_commits": sum(repo.count_repo_outgoing for repo in repositories),
+            "missing_commits": sum(repo.count_repo_missing for repo in repositories),
+        },
+    )
 
 
 @login_required
 def git_status_project(request, project):
     obj = get_project(request, project)
 
-    if not can_see_repository_status(request.user, obj):
-        raise PermissionDenied()
-
-    statuses = [
-        (component.__unicode__(), component.repository.status)
-        for component in obj.all_repo_components()
-    ]
-
-    return render(
-        request,
-        'js/git-status.html',
-        {
-            'object': obj,
-            'project': obj,
-            'changes': Change.objects.filter(
-                subproject__project=obj,
-                action__in=Change.ACTIONS_REPOSITORY,
-            )[:10],
-            'statuses': statuses,
-        }
-    )
+    return git_status_shared(request, obj, obj.all_repo_components)
 
 
 @login_required
-def git_status_subproject(request, project, subproject):
-    obj = get_subproject(request, project, subproject)
-
-    if not can_see_repository_status(request.user, obj.project):
-        raise PermissionDenied()
+def git_status_component(request, project, component):
+    obj = get_component(request, project, component)
 
     target = obj
     if target.is_repo_link:
-        target = target.linked_subproject
+        target = target.linked_component
 
-    return render(
-        request,
-        'js/git-status.html',
-        {
-            'object': obj,
-            'project': obj.project,
-            'changes': Change.objects.filter(
-                action__in=Change.ACTIONS_REPOSITORY,
-                subproject=target,
-            )[:10],
-            'statuses': [(None, obj.repository.status)],
-        }
-    )
+    return git_status_shared(request, obj, [obj])
 
 
 @login_required
-def git_status_translation(request, project, subproject, lang):
-    obj = get_translation(request, project, subproject, lang)
+def git_status_translation(request, project, component, lang):
+    obj = get_translation(request, project, component, lang)
 
-    if not can_see_repository_status(request.user, obj.subproject.project):
-        raise PermissionDenied()
-
-    target = obj.subproject
+    target = obj.component
     if target.is_repo_link:
-        target = target.linked_subproject
+        target = target.linked_component
 
+    return git_status_shared(request, obj, [obj.component])
+
+
+@cache_control(max_age=3600)
+def matomo(request):
     return render(
-        request,
-        'js/git-status.html',
-        {
-            'object': obj,
-            'project': obj.subproject.project,
-            'changes': Change.objects.filter(
-                action__in=Change.ACTIONS_REPOSITORY,
-                subproject=target,
-            )[:10],
-            'statuses': [(None, obj.subproject.repository.status)],
-        }
-    )
-
-
-def mt_services(request):
-    '''
-    Generates list of installed machine translation services in JSON.
-    '''
-    # Machine translation
-    machine_services = MACHINE_TRANSLATION_SERVICES.keys()
-
-    return HttpResponse(
-        json.dumps(machine_services),
-        content_type='application/json'
-    )
-
-
-def get_detail(request, project, subproject, checksum):
-    '''
-    Returns source translation detail in all languages.
-    '''
-    subproject = get_subproject(request, project, subproject)
-    units = Unit.objects.filter(
-        checksum=checksum,
-        translation__subproject=subproject
-    )
-    try:
-        source = units[0].source_info
-    except IndexError:
-        raise Http404('Non existing unit!')
-
-    check_flags = [
-        (CHECKS[x].ignore_string, CHECKS[x].name) for x in CHECKS
-    ]
-    extra_flags = [(x, EXTRA_FLAGS[x]) for x in EXTRA_FLAGS]
-
-    return render(
-        request,
-        'js/detail.html',
-        {
-            'units': units,
-            'source': source,
-            'project': subproject.project,
-            'next': request.GET.get('next', ''),
-            'priority_form': PriorityForm(
-                initial={'priority': source.priority}
-            ),
-            'check_flags_form': CheckFlagsForm(
-                initial={'flags': source.check_flags}
-            ),
-            'extra_flags': extra_flags,
-            'check_flags': check_flags,
-        }
+        request, "js/matomo.js", content_type='text/javascript; charset="utf-8"'
     )

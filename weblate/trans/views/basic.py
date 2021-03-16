@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,146 +14,80 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.shortcuts import render, redirect
-from django.utils.translation import ugettext as _
 from django.contrib.auth.decorators import login_required
-from django.contrib import messages
-from django.db.models import Sum, Count, Q
-from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404, redirect
+from django.utils.html import escape
+from django.utils.http import urlencode
 from django.utils.safestring import mark_safe
-import django.views.defaults
+from django.utils.translation import gettext as _
+from django.views.decorators.cache import never_cache
 
-from weblate.trans.models import (
-    Project, SubProject, Translation, Check,
-    Dictionary, Change, Unit, WhiteboardMessage
-)
-from weblate.requirements import get_versions, get_optional_versions
+from weblate.formats.models import EXPORTERS
 from weblate.lang.models import Language
 from weblate.trans.forms import (
-    get_upload_form, SearchForm, SiteSearchForm,
-    AutoForm, ReviewForm, NewLanguageForm,
-    UserManageForm, ReportsForm,
+    AnnouncementForm,
+    AutoForm,
+    BulkEditForm,
+    ComponentDeleteForm,
+    ComponentMoveForm,
+    ComponentRenameForm,
+    DownloadForm,
+    ProjectDeleteForm,
+    ProjectRenameForm,
+    ReplaceForm,
+    ReportsForm,
+    SearchForm,
+    TranslationDeleteForm,
+    get_new_language_form,
+    get_new_unit_form,
+    get_upload_form,
 )
-from weblate.trans.permissions import can_automatic_translation
-from weblate.accounts.models import Profile, notify_new_language
-from weblate.trans.views.helper import (
-    get_project, get_subproject, get_translation,
+from weblate.trans.models import Change, ComponentList, Translation
+from weblate.trans.models.component import prefetch_tasks
+from weblate.trans.models.project import prefetch_project_flags
+from weblate.trans.models.translation import GhostTranslation
+from weblate.trans.util import render, sort_unicode
+from weblate.utils import messages
+from weblate.utils.ratelimit import session_ratelimit_post
+from weblate.utils.stats import GhostProjectLanguageStats, prefetch_stats
+from weblate.utils.views import (
+    get_component,
+    get_paginator,
+    get_project,
+    get_translation,
+    optional_form,
     try_set_language,
 )
-import weblate
-
-import datetime
-from urllib import urlencode
 
 
-def home(request):
-    """
-    Home page of Weblate showing list of projects, stats
-    and user links if logged in.
-    """
-
-    if 'show_set_password' in request.session:
-        messages.warning(
-            request,
-            _(
-                'You have activated your account, now you should set '
-                'the password to be able to login next time.'
-            )
-        )
-        return redirect('password')
-
-    wb_messages = WhiteboardMessage.objects.all()
-
-    projects = Project.objects.all_acl(request.user)
-    if projects.count() == 1:
-        projects = SubProject.objects.filter(
-            project=projects[0]
-        ).select_related()
-
-    # Warn about not filled in username (usually caused by migration of
-    # users from older system
-    if not request.user.is_anonymous() and request.user.first_name == '':
-        messages.warning(
-            request,
-            _('Please set your full name in your profile.')
-        )
-
-    # Some stats
-    top_translations = Profile.objects.order_by('-translated')[:10]
-    top_suggestions = Profile.objects.order_by('-suggested')[:10]
-    last_changes = Change.objects.last_changes(request.user)[:10]
-
+@never_cache
+def list_projects(request):
+    """List all projects."""
     return render(
         request,
-        'index.html',
+        "projects.html",
         {
-            'projects': projects,
-            'top_translations': top_translations.select_related('user'),
-            'top_suggestions': top_suggestions.select_related('user'),
-            'last_changes': last_changes,
-            'last_changes_url': '',
-            'search_form': SiteSearchForm(),
-            'whiteboard_messages': wb_messages,
-        }
+            "allow_index": True,
+            "projects": prefetch_project_flags(
+                prefetch_stats(request.user.allowed_projects)
+            ),
+            "title": _("Projects"),
+        },
     )
 
 
-def search(request):
-    """
-    Performs site-wide search on units.
-    """
-    search_form = SiteSearchForm(request.GET)
-    context = {
-        'search_form': search_form,
-    }
-
-    if search_form.is_valid():
-        units = Unit.objects.search(
-            None,
-            search_form.cleaned_data,
-        ).select_related(
-            'translation',
-        )
-
-        # Filter results by ACL
-        acl_projects, filtered = Project.objects.get_acl_status(request.user)
-        if filtered:
-            units = units.filter(
-                translation__subproject__project__in=acl_projects
-            )
-
-        limit = request.GET.get('limit', 50)
-        page = request.GET.get('page', 1)
-
-        paginator = Paginator(units, limit)
-
-        try:
-            units = paginator.page(page)
-        except PageNotAnInteger:
-            # If page is not an integer, deliver first page.
-            units = paginator.page(1)
-        except EmptyPage:
-            # If page is out of range (e.g. 9999), deliver last page of
-            # results.
-            units = paginator.page(paginator.num_pages)
-
-        context['page_obj'] = units
-        context['title'] = _('Search for %s') % (
-            search_form.cleaned_data['q']
-        )
-        context['query_string'] = search_form.urlencode()
-        context['search_query'] = search_form.cleaned_data['q']
-    else:
-        messages.error(request, _('Invalid search query!'))
-
-    return render(
-        request,
-        'search.html',
-        context
-    )
+def add_ghost_translations(component, user, translations, generator, **kwargs):
+    """Adds ghost translations for user languages to the list."""
+    if component.can_add_new_language(user, fast=True):
+        existing = {translation.language.code for translation in translations}
+        for language in user.profile.languages.all():
+            if language.code in existing:
+                continue
+            translations.append(generator(component, language, **kwargs))
 
 
 def show_engage(request, project, lang=None):
@@ -162,315 +95,372 @@ def show_engage(request, project, lang=None):
     obj = get_project(request, project, skip_acl=True)
 
     # Handle language parameter
-    language = None
     if lang is not None:
-        language = try_set_language(lang)
-
-    context = {
-        'object': obj,
-        'project': obj,
-        'languages': obj.get_language_count(),
-        'total': obj.get_total(),
-        'percent': obj.get_translated_percent(language),
-        'url': obj.get_absolute_url(),
-        'language': language,
-    }
-
-    # Render text
-    if language is None:
-        status_text = _(
-            '<a href="%(url)s">Translation project for %(project)s</a> '
-            'currently contains %(total)s strings for translation and is '
-            '<a href="%(url)s">being translated into %(languages)s languages'
-            '</a>. Overall, these translations are %(percent)s%% complete.'
-        )
+        language = get_object_or_404(Language, code=lang)
     else:
-        # Translators: line of text in engagement widget, please use your
-        # language name instead of English
-        status_text = _(
-            '<a href="%(url)s">Translation project for %(project)s</a> into '
-            'English currently contains %(total)s strings for translation and '
-            'is %(percent)s%% complete.'
-        )
-        if 'English' in status_text:
-            status_text = status_text.replace('English', language.name)
-
-    context['status_text'] = mark_safe(status_text % context)
+        language = None
+    full_stats = obj.stats
+    if language:
+        try_set_language(lang)
+        stats_obj = full_stats.get_single_language_stats(language)
+    else:
+        stats_obj = full_stats
 
     return render(
         request,
-        'engage.html',
-        context
+        "engage.html",
+        {
+            "allow_index": True,
+            "object": obj,
+            "project": obj,
+            "full_stats": full_stats,
+            "languages": stats_obj.languages,
+            "total": obj.stats.source_strings,
+            "percent": stats_obj.translated_percent,
+            "language": language,
+            "project_link": mark_safe(
+                '<a href="{}">{}</a>'.format(
+                    escape(obj.get_absolute_url()), escape(obj.name)
+                )
+            ),
+            "title": _("Get involved in {0}!").format(obj),
+        },
     )
 
 
+@never_cache
 def show_project(request, project):
     obj = get_project(request, project)
+    obj.stats.ensure_basic()
+    user = request.user
 
-    dict_langs = Dictionary.objects.filter(
-        project=obj
-    ).values_list(
-        'language', flat=True
-    ).distinct()
+    last_changes = obj.change_set.prefetch().order()[:10]
+    last_announcements = (
+        obj.change_set.prefetch().order().filter(action=Change.ACTION_ANNOUNCEMENT)[:10]
+    )
 
-    dicts = []
-    for language in Language.objects.filter(id__in=dict_langs):
-        dicts.append(
-            {
-                'language': language,
-                'count': Dictionary.objects.filter(
-                    language=language,
-                    project=obj
-                ).count(),
-            }
+    all_components = prefetch_stats(
+        obj.child_components.filter_access(user).prefetch().order()
+    )
+    all_components = get_paginator(request, all_components)
+    for component in all_components:
+        component.is_shared = None if component.project == obj else component.project
+
+    language_stats = obj.stats.get_language_stats()
+    # Show ghost translations for user languages
+    component = None
+    for component in all_components:
+        if component.can_add_new_language(user, fast=True):
+            break
+    if component:
+        add_ghost_translations(
+            component,
+            user,
+            language_stats,
+            GhostProjectLanguageStats,
+            is_shared=component.is_shared,
         )
 
-    last_changes = Change.objects.prefetch().filter(
-        Q(translation__subproject__project=obj) |
-        Q(dictionary__project=obj)
-    )[:10]
+    language_stats = sort_unicode(
+        language_stats,
+        lambda x: "{}-{}".format(
+            user.profile.get_language_order(x.language), x.language
+        ),
+    )
+
+    components = prefetch_tasks(all_components)
 
     return render(
         request,
-        'project.html',
+        "project.html",
         {
-            'object': obj,
-            'project': obj,
-            'dicts': dicts,
-            'last_changes': last_changes,
-            'last_changes_url': urlencode(
-                {'project': obj.slug}
+            "allow_index": True,
+            "object": obj,
+            "project": obj,
+            "last_changes": last_changes,
+            "last_announcements": last_announcements,
+            "reports_form": ReportsForm(),
+            "last_changes_url": urlencode({"project": obj.slug}),
+            "language_stats": [stat.obj or stat for stat in language_stats],
+            "search_form": SearchForm(request.user),
+            "announcement_form": optional_form(
+                AnnouncementForm, user, "project.edit", obj
             ),
-            'add_user_form': UserManageForm(),
-        }
+            "delete_form": optional_form(
+                ProjectDeleteForm, user, "project.edit", obj, obj=obj
+            ),
+            "rename_form": optional_form(
+                ProjectRenameForm,
+                user,
+                "project.edit",
+                obj,
+                request=request,
+                instance=obj,
+            ),
+            "replace_form": optional_form(ReplaceForm, user, "unit.edit", obj),
+            "bulk_state_form": optional_form(
+                BulkEditForm,
+                user,
+                "translation.auto",
+                obj,
+                user=user,
+                obj=obj,
+                project=obj,
+                auto_id="id_bulk_%s",
+            ),
+            "components": components,
+            "licenses": sorted(
+                (component for component in all_components if component.license),
+                key=lambda component: component.license,
+            ),
+        },
     )
 
 
-def show_subproject(request, project, subproject):
-    obj = get_subproject(request, project, subproject)
+@never_cache
+def show_component(request, project, component):
+    obj = get_component(request, project, component)
+    obj.stats.ensure_basic()
+    user = request.user
 
-    last_changes = Change.objects.prefetch().filter(
-        translation__subproject=obj
-    )[:10]
+    last_changes = obj.change_set.prefetch().order()[:10]
 
-    new_lang_form = NewLanguageForm()
+    translations = prefetch_stats(list(obj.translation_set.prefetch()))
+
+    # Show ghost translations for user languages
+    add_ghost_translations(obj, user, translations, GhostTranslation)
+
+    translations = sort_unicode(
+        translations,
+        lambda x: "{}-{}".format(
+            user.profile.get_language_order(x.language), x.language
+        ),
+    )
 
     return render(
         request,
-        'subproject.html',
+        "component.html",
         {
-            'object': obj,
-            'project': obj.project,
-            'translations': obj.translation_set.enabled(),
-            'show_language': 1,
-            'reports_form': ReportsForm(),
-            'last_changes': last_changes,
-            'last_changes_url': urlencode(
-                {'subproject': obj.slug, 'project': obj.project.slug}
+            "allow_index": True,
+            "object": obj,
+            "project": obj.project,
+            "translations": translations,
+            "reports_form": ReportsForm(),
+            "last_changes": last_changes,
+            "last_changes_url": urlencode(
+                {"component": obj.slug, "project": obj.project.slug}
             ),
-            'new_lang_form': new_lang_form,
-        }
+            "replace_form": optional_form(ReplaceForm, user, "unit.edit", obj),
+            "bulk_state_form": optional_form(
+                BulkEditForm,
+                user,
+                "translation.auto",
+                obj,
+                user=user,
+                obj=obj,
+                project=obj.project,
+                auto_id="id_bulk_%s",
+            ),
+            "announcement_form": optional_form(
+                AnnouncementForm, user, "component.edit", obj
+            ),
+            "delete_form": optional_form(
+                ComponentDeleteForm, user, "component.edit", obj, obj=obj
+            ),
+            "rename_form": optional_form(
+                ComponentRenameForm,
+                user,
+                "component.edit",
+                obj,
+                request=request,
+                instance=obj,
+            ),
+            "move_form": optional_form(
+                ComponentMoveForm,
+                user,
+                "component.edit",
+                obj,
+                request=request,
+                instance=obj,
+            ),
+            "search_form": SearchForm(request.user),
+            "alerts": obj.all_alerts,
+        },
     )
 
 
-def show_translation(request, project, subproject, lang):
-    obj = get_translation(request, project, subproject, lang)
-    last_changes = Change.objects.prefetch().filter(
-        translation=obj
-    )[:10]
-
-    # Check locks
-    obj.is_locked(request.user)
+@never_cache
+def show_translation(request, project, component, lang):
+    obj = get_translation(request, project, component, lang)
+    component = obj.component
+    project = component.project
+    obj.stats.ensure_all()
+    last_changes = obj.change_set.prefetch().order()[:10]
+    user = request.user
 
     # Get form
-    form = get_upload_form(request)()
+    form = get_upload_form(user, obj)
 
-    # Is user allowed to do automatic translation?
-    if can_automatic_translation(request.user, obj.subproject.project):
-        autoform = AutoForm(obj)
-    else:
-        autoform = None
+    search_form = SearchForm(request.user, language=obj.language)
 
-    # Search form for everybody
-    search_form = SearchForm()
-
-    # Review form for logged in users
-    if request.user.is_anonymous():
-        review_form = None
-    else:
-        review_form = ReviewForm(
-            initial={
-                'date': datetime.date.today() - datetime.timedelta(days=31)
-            }
+    # Translations to same language from other components in this project
+    other_translations = prefetch_stats(
+        list(
+            Translation.objects.prefetch()
+            .filter(component__project=project, language=obj.language)
+            .exclude(pk=obj.pk)
         )
+    )
+
+    # Include ghost translations for other components, this
+    # adds quick way to create translations in other components
+    existing = {translation.component.slug for translation in other_translations}
+    existing.add(component.slug)
+    for test_component in project.child_components.filter_access(user).exclude(
+        slug__in=existing
+    ):
+        if test_component.can_add_new_language(user, fast=True):
+            other_translations.append(GhostTranslation(test_component, obj.language))
+
+    # Limit the number of other components displayed to 10, preferring untranslated ones
+    other_translations = sorted(
+        other_translations, key=lambda t: t.stats.translated_percent
+    )[:10]
 
     return render(
         request,
-        'translation.html',
+        "translation.html",
         {
-            'object': obj,
-            'project': obj.subproject.project,
-            'form': form,
-            'autoform': autoform,
-            'search_form': search_form,
-            'review_form': review_form,
-            'last_changes': last_changes,
-            'last_changes_url': urlencode(obj.get_kwargs()),
-            'show_only_component': True,
-            'other_translations': Translation.objects.filter(
-                subproject__project=obj.subproject.project,
-                language=obj.language,
-            ).exclude(
-                pk=obj.pk
+            "allow_index": True,
+            "object": obj,
+            "project": project,
+            "form": form,
+            "download_form": DownloadForm(auto_id="id_dl_%s"),
+            "autoform": optional_form(
+                AutoForm, user, "translation.auto", obj, obj=component
             ),
-        }
-    )
-
-
-def not_found(request):
-    """
-    Error handler showing list of available projects.
-    """
-    return render(
-        request,
-        '404.html',
-        {
-            'request_path': request.path,
-            'title': _('Page Not Found'),
+            "search_form": search_form,
+            "replace_form": optional_form(ReplaceForm, user, "unit.edit", obj),
+            "bulk_state_form": optional_form(
+                BulkEditForm,
+                user,
+                "translation.auto",
+                obj,
+                user=user,
+                obj=obj,
+                project=project,
+                auto_id="id_bulk_%s",
+            ),
+            "new_unit_form": get_new_unit_form(obj, user),
+            "announcement_form": optional_form(
+                AnnouncementForm, user, "component.edit", obj
+            ),
+            "delete_form": optional_form(
+                TranslationDeleteForm, user, "translation.delete", obj, obj=obj
+            ),
+            "last_changes": last_changes,
+            "last_changes_url": urlencode(obj.get_reverse_url_kwargs()),
+            "other_translations": other_translations,
+            "exporters": EXPORTERS.list_exporters(obj),
         },
-        status=404
     )
 
 
-def denied(request):
-    """
-    Error handler showing list of available projects.
-    """
-    return render(
-        request,
-        '403.html',
-        {
-            'request_path': request.path,
-            'title': _('Permission Denied'),
-        },
-        status=403
-    )
-
-
-def server_error(request):
-    """
-    Error handler for server errors.
-    """
-    try:
-        return render(
-            request,
-            '500.html',
-            {
-                'request_path': request.path,
-                'title': _('Internal Server Error'),
-            },
-            status=500,
-        )
-    except Exception:
-        return django.views.defaults.server_error(request)
-
-
-def about(request):
-    """
-    Shows about page with version information.
-    """
-    context = {}
-    totals = Profile.objects.aggregate(
-        Sum('translated'), Sum('suggested'), Count('id')
-    )
-    total_strings = []
-    total_words = []
-    for project in SubProject.objects.iterator():
-        try:
-            translation = project.translation_set.all()[0]
-            total_strings.append(translation.total)
-            total_words.append(translation.total_words)
-        except IndexError:
-            pass
-    context['title'] = _('About Weblate')
-    context['total_translations'] = totals['translated__sum']
-    context['total_suggestions'] = totals['suggested__sum']
-    context['total_users'] = totals['id__count']
-    context['total_strings'] = sum(total_strings)
-    context['total_words'] = sum(total_words)
-    context['total_languages'] = Language.objects.filter(
-        translation__total__gt=0
-    ).distinct().count()
-    context['total_checks'] = Check.objects.count()
-    context['ignored_checks'] = Check.objects.filter(ignore=True).count()
-    context['versions'] = get_versions() + get_optional_versions()
-
-    return render(
-        request,
-        'about.html',
-        context
-    )
-
-
-def data_root(request):
-    return render(
-        request,
-        'data-root.html',
-        {
-            'hooks_docs': weblate.get_doc_url('api', 'hooks'),
-            'api_docs': weblate.get_doc_url('api', 'exports'),
-            'rss_docs': weblate.get_doc_url('api', 'rss'),
-        }
-    )
-
-
+@never_cache
 def data_project(request, project):
     obj = get_project(request, project)
     return render(
         request,
-        'data.html',
+        "data.html",
         {
-            'object': obj,
-            'project': obj,
-            'hooks_docs': weblate.get_doc_url('api', 'hooks'),
-            'api_docs': weblate.get_doc_url('api', 'exports'),
-            'rss_docs': weblate.get_doc_url('api', 'rss'),
-        }
+            "object": obj,
+            "components": obj.child_components.filter_access(request.user).order(),
+            "project": obj,
+        },
     )
 
 
+@never_cache
 @login_required
-def new_language(request, project, subproject):
-    obj = get_subproject(request, project, subproject)
+@session_ratelimit_post("language")
+def new_language(request, project, component):
+    obj = get_component(request, project, component)
 
-    form = NewLanguageForm(request.POST)
+    form_class = get_new_language_form(request, obj)
+    can_add = obj.can_add_new_language(request.user)
 
-    if form.is_valid():
-        language = Language.objects.get(code=form.cleaned_data['lang'])
-        same_lang = obj.translation_set.filter(language=language)
-        if same_lang.exists():
-            messages.error(
-                request,
-                _('Chosen translation already exists in this project!')
-            )
-        elif obj.new_lang == 'contact':
-            notify_new_language(obj, language, request.user)
-            messages.success(
-                request,
-                _(
-                    "A request for a new translation has been "
-                    "sent to the project's maintainers."
-                )
-            )
-        elif obj.new_lang == 'add':
-            obj.add_new_language(language, request)
+    if request.method == "POST":
+        form = form_class(obj, request.POST)
+
+        if form.is_valid():
+            langs = form.cleaned_data["lang"]
+            kwargs = {
+                "user": request.user,
+                "author": request.user,
+                "component": obj,
+                "details": {},
+            }
+            for language in Language.objects.filter(code__in=langs):
+                kwargs["details"]["language"] = language.code
+                if can_add:
+                    translation = obj.add_new_language(language, request)
+                    if translation:
+                        kwargs["translation"] = translation
+                        if len(langs) == 1:
+                            obj = translation
+                        Change.objects.create(
+                            action=Change.ACTION_ADDED_LANGUAGE, **kwargs
+                        )
+                elif obj.new_lang == "contact":
+                    Change.objects.create(
+                        action=Change.ACTION_REQUESTED_LANGUAGE, **kwargs
+                    )
+                    messages.success(
+                        request,
+                        _(
+                            "A request for a new translation has been "
+                            "sent to the project's maintainers."
+                        ),
+                    )
+            return redirect(obj)
+        messages.error(request, _("Please fix errors in the form."))
     else:
-        messages.error(
-            request,
-            _(
-                'Please choose the language into which '
-                'you would like to translate.'
-            )
-        )
+        form = form_class(obj)
 
-    return redirect(obj)
+    return render(
+        request,
+        "new-language.html",
+        {"object": obj, "project": obj.project, "form": form, "can_add": can_add},
+    )
+
+
+@never_cache
+def healthz(request):
+    """Simple health check endpoint."""
+    return HttpResponse("ok")
+
+
+@never_cache
+def show_component_list(request, name):
+    obj = get_object_or_404(ComponentList, slug__iexact=name)
+
+    return render(
+        request,
+        "component-list.html",
+        {"object": obj, "components": obj.components.filter_access(request.user)},
+    )
+
+
+@never_cache
+def guide(request, project, component):
+    obj = get_component(request, project, component)
+
+    return render(
+        request,
+        "guide.html",
+        {
+            "object": obj,
+            "project": obj.project,
+            "guidelines": obj.guidelines,
+        },
+    )

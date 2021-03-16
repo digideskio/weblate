@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,134 +14,175 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-'''
-Charting library for Weblate.
-'''
+"""Charting library for Weblate."""
 
-from weblate.trans.models import Change
-from weblate.lang.models import Language
-from weblate.trans.views.helper import get_project_translation
-from django.shortcuts import get_object_or_404
-from django.http import HttpResponse
-from django.contrib.auth.models import User
+from datetime import datetime
+from typing import Callable, Optional
+
+from django.core.cache import cache
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, render
 from django.utils.translation import pgettext
-import json
+
+from weblate.auth.models import User
+from weblate.lang.models import Language
+from weblate.trans.models import Change
+from weblate.utils.views import get_percent_color, get_project_translation
 
 
-def get_json_stats(request, days, step, project=None, subproject=None,
-                   lang=None, user=None):
-    """
-    Parse json stats URL params.
-    """
+def cache_key(*args):
+    def makekey(val):
+        if not val:
+            return "0"
+        if hasattr(val, "id"):
+            return str(val.id)
+        return str(val)
+
+    return "activity-{}".format("-".join(makekey(arg) for arg in args))
+
+
+def get_activity_stats(
+    request,
+    days: int,
+    step: int,
+    project: Optional[str] = None,
+    component: Optional[str] = None,
+    lang: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Parse json stats URL params."""
     if project is None and lang is None and user is None:
         project = None
-        subproject = None
+        component = None
         translation = None
         language = None
         user = None
     elif user is not None:
         project = None
-        subproject = None
+        component = None
         translation = None
         language = None
         user = get_object_or_404(User, username=user)
     elif project is None:
         project = None
-        subproject = None
+        component = None
         translation = None
         language = get_object_or_404(Language, code=lang)
         user = None
     else:
         # Process parameters
-        project, subproject, translation = get_project_translation(
-            request,
-            project,
-            subproject,
-            lang
+        project, component, translation = get_project_translation(
+            request, project, component, lang
         )
         language = None
         user = None
 
-    # Get actual stats
-    return Change.objects.base_stats(
-        days,
-        step,
-        project,
-        subproject,
-        translation,
-        language,
-        user
-    )
+    key = cache_key(days, step, project, component, translation, language, user)
+    result = cache.get(key)
+    if not result:
+        # Get actual stats
+        result = Change.objects.base_stats(
+            days, step, project, component, translation, language, user
+        )
+        cache.set(key, result, 3600 * 4)
+    return result
 
 
-def yearly_activity(request, project=None, subproject=None, lang=None,
-                    user=None):
-    """
-    Returns yearly activity for matching changes as json.
-    """
-    activity = get_json_stats(
-        request, 364, 7,
-        project, subproject, lang
-    )
+def get_label_month(pos: int, previous_month: int, timestamp: datetime) -> str:
+    if previous_month != timestamp.month:
+        return pgettext(
+            "Format string for yearly activity chart", "{month}/{year}"
+        ).format(month=timestamp.month, year=timestamp.year)
+    return ""
 
-    # Format
+
+def get_label_day(pos: int, previous_month: int, timestamp: datetime) -> str:
+    if pos % 5 == 0:
+        return pgettext(
+            "Format string for monthly activity chart", "{day}/{month}"
+        ).format(day=timestamp.day, month=timestamp.month, year=timestamp.year)
+    return ""
+
+
+def render_activity(
+    request,
+    days: int,
+    step: int,
+    label_func: Callable[[int, int, datetime], str],
+    project: Optional[str] = None,
+    component: Optional[str] = None,
+    lang: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Return activity for matching changes and interval as SVG chart."""
+    activity = get_activity_stats(request, days, step, project, component, lang, user)
+
+    max_value = max(item[1] for item in activity)
+
     serie = []
-    labels = []
-    month = -1
-    for item in activity:
-        serie.append(item[1])
-        if month != item[0].month:
-            labels.append(
-                pgettext(
-                    'Format string for yearly activity chart',
-                    '{month}/{year}'
-                ).format(
-                    month=item[0].month,
-                    year=item[0].year,
-                )
-            )
-            month = item[0].month
-        else:
-            labels.append('')
-
-    return HttpResponse(
-        content_type='application/json',
-        content=json.dumps({'series': [serie], 'labels': labels})
-    )
-
-
-def monthly_activity(request, project=None, subproject=None, lang=None,
-                     user=None):
-    """
-    Returns monthly activity for matching changes as json.
-    """
-    activity = get_json_stats(
-        request, 31, 1,
-        project, subproject, lang
-    )
-
-    # Format
-    serie = []
-    labels = []
+    previous_month = -1
+    offset = 0
     for pos, item in enumerate(activity):
-        serie.append(item[1])
-        if pos % 5 == 0:
-            labels.append(
-                pgettext(
-                    'Format string for monthly activity chart',
-                    '{day}/{month}'
-                ).format(
-                    day=item[0].day,
-                    month=item[0].month,
-                    year=item[0].year,
-                )
+        timestamp, value = item
+        percent = value * 100 // max_value if max_value else 0
+        if value and percent < 4:
+            percent = 4
+        label = label_func(pos, previous_month, timestamp)
+        previous_month = timestamp.month
+        offset += 15
+        height = int(1.5 * percent)
+        serie.append(
+            (
+                value,
+                label,
+                offset,
+                get_percent_color(percent),
+                height,
+                10 + (150 - height),
             )
-        else:
-            labels.append('')
+        )
 
-    return HttpResponse(
-        content_type='application/json',
-        content=json.dumps({'series': [serie], 'labels': labels})
+    return render(
+        request, "svg/activity.svg", {"serie": serie}, content_type="image/svg+xml"
     )
+
+
+def yearly_activity(
+    request,
+    project: Optional[str] = None,
+    component: Optional[str] = None,
+    lang: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Return yearly activity for matching changes as SVG chart."""
+    return render_activity(
+        request, 364, 7, get_label_month, project, component, lang, user
+    )
+
+
+def monthly_activity(
+    request,
+    project: Optional[str] = None,
+    component: Optional[str] = None,
+    lang: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Return monthly activity for matching changes as SVG chart."""
+    return render_activity(
+        request, 52, 1, get_label_day, project, component, lang, user
+    )
+
+
+def monthly_activity_json(
+    request,
+    project: Optional[str] = None,
+    component: Optional[str] = None,
+    lang: Optional[str] = None,
+    user: Optional[str] = None,
+):
+    """Return monthly activity for matching changes as json."""
+    activity = get_activity_stats(request, 52, 1, project, component, lang, user)
+
+    return JsonResponse(data=[item[1] for item in activity], safe=False)

@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,11 +14,10 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""
-WSGI config for weblate project.
+"""WSGI config for weblate project.
 
 This module contains the WSGI application used by Django's development server
 and any production WSGI deployments. It should expose a module-level variable
@@ -31,9 +29,9 @@ might make sense to replace the whole Django WSGI application with a custom one
 that later delegates to the Django one. For example, you could introduce WSGI
 middleware here, or combine a Django application with an application of another
 framework.
-
 """
 import os
+
 from django.core.wsgi import get_wsgi_application
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "weblate.settings")
@@ -42,7 +40,3 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "weblate.settings")
 # file. This includes Django's development server, if the WSGI_APPLICATION
 # setting points here.
 application = get_wsgi_application()
-
-# Apply WSGI middleware here.
-# from helloworld.wsgi import HelloWorldApplication
-# application = HelloWorldApplication(application)

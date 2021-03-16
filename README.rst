@@ -1,76 +1,65 @@
-Weblate
-=======
+.. image:: https://s.weblate.org/cdn/Logo-Darktext-borders.png
+   :alt: Weblate
+   :target: https://weblate.org/
+   :height: 80px
 
-.. image:: https://travis-ci.org/nijel/weblate.svg
-    :alt: Build status
-    :target: https://travis-ci.org/nijel/weblate
+**Weblate is a copylefted libre software web-based continuous localization system,
+used by over 1150 libre projects and companies in more than 115 countries.**
+
+Install it, or use the Hosted Weblate service at `weblate.org`_.
+
+.. image:: https://img.shields.io/badge/website-weblate.org-blue.svg
+    :alt: Website
+    :target: https://weblate.org/
 
 .. image:: https://hosted.weblate.org/widgets/weblate/-/svg-badge.svg
     :alt: Translation status
-    :target: https://hosted.weblate.org/engage/weblate/?utm_source=widget
+    :target: https://hosted.weblate.org/engage/weblate/
 
-.. image:: http://codecov.io/github/nijel/weblate/coverage.svg?branch=master
-    :alt: Codecov Coverage Status
-    :target: http://codecov.io/github/nijel/weblate?branch=master
+.. image:: https://bestpractices.coreinfrastructure.org/projects/552/badge
+    :alt: CII Best Practices
+    :target: https://bestpractices.coreinfrastructure.org/projects/552
 
-.. image:: https://landscape.io/github/nijel/weblate/master/landscape.png
-    :alt: Code Health
-    :target: https://landscape.io/github/nijel/weblate/master
+.. image:: https://img.shields.io/pypi/v/Weblate.svg
+    :target: https://pypi.org/project/Weblate/
 
-.. image:: https://www.codacy.com/project/badge/394a22d396414d48abb6a85054f4415e
-    :alt: Codacy Badge
-    :target: https://www.codacy.com/public/michal_2/weblate
+.. image:: https://readthedocs.org/projects/weblate/badge/
+    :target: https://docs.weblate.org/
 
-.. image:: https://api.bountysource.com/badge/tracker?tracker_id=253393
-    :alt: Bountysource
-    :target: https://www.bountysource.com/trackers/253393-weblate?utm_source=253393&utm_medium=shield&utm_campaign=TRACKER_BADGE
+.. image:: https://img.shields.io/github/license/WeblateOrg/weblate.svg
+    :alt: License
+    :target: https://github.com/WeblateOrg/weblate/blob/master/COPYING
 
-Weblate is a free web-based translation tool with tight version control
-integration. It features simple and clean user interface, propagation of
-translations across components within a project, quality checks and automatic
-linking to source files.
+Support
+-------
 
-Weblate has its website at http://weblate.org/.
-
-Features
---------
-
-* Easy web based translation
-* Propagation of translations across components (eg. branches) within projects
-* Tight VCS integration - every change is represented by version control commit
-* Usage of Django's admin interface
-* Upload and automatic merging of po files
-* Links to source files for context
-* Message quality checks
-* Tunable access control
-* Wide range of supported translation formats (Gettext, Qt, Java, Windows, Symbian and more)
-* Supports Git and Mercurial
+Weblate is a libre software with optional professional support and cloud
+hosting offerings. Check out https://weblate.org/hosting/ for more information.
 
 Documentation
 -------------
 
-Detailed documentation is available in ``docs`` directory in the sources.
-
-The documentation can be also viewed online on
-http://docs.weblate.org/.
+To be found in the ``docs`` directory of the source code, or
+viewed online on https://docs.weblate.org/
 
 Installation
 ------------
 
-Installation and setup instructions are provided in our manual, check
-quick setup guide:
+Setup instructions:
 
-http://docs.weblate.org/en/latest/admin/quick.html
+https://docs.weblate.org/en/latest/admin/install.html
 
 Bugs
 ----
 
-Please report bugs to https://github.com/nijel/weblate/issues.
+Please report feature requests and problems to:
+
+https://github.com/WeblateOrg/weblate/issues
 
 License
 -------
 
-Copyright (C) 2012 - 2015 Michal Čihař michal@cihar.com
+Copyright © 2012–2021 Michal Čihař michal@cihar.com
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -82,4 +71,6 @@ WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
-this program. If not, see http://www.gnu.org/licenses/.
+this program. If not, see https://www.gnu.org/licenses/.
+
+.. _weblate.org: https://weblate.org/

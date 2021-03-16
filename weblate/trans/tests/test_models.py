@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,878 +14,496 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-
-"""
-Tests for translation models.
-"""
-
-from django.test import TestCase
-from django.conf import settings
-from django.utils import timezone
-from django.contrib.auth.models import Permission, User
-from django.core.exceptions import ValidationError
-import shutil
+"""Test for translation models."""
 import os
+
+from django.core.management.color import no_style
+from django.db import connection, transaction
+from django.test import LiveServerTestCase, TestCase
+from django.test.utils import override_settings
+
+from weblate.auth.models import Group, User
+from weblate.checks.models import Check
+from weblate.lang.models import Language, Plural
 from weblate.trans.models import (
-    Project, SubProject, Source, Unit, WhiteboardMessage, Check,
-    get_related_units,
+    Announcement,
+    AutoComponentList,
+    Comment,
+    Component,
+    ComponentList,
+    Project,
+    Suggestion,
+    Unit,
+    Vote,
 )
-from weblate import appsettings
-from weblate.trans.tests import OverrideSettings
-from weblate.trans.tests.utils import get_test_file
-from weblate.trans.vcs import GitRepository, HgRepository
-from weblate.trans.search import clean_indexes
-
-REPOWEB_URL = \
-    'https://github.com/nijel/weblate-test/blob/master/%(file)s#L%(line)s'
-GIT_URL = 'git://github.com/nijel/weblate-test.git'
-HG_URL = 'https://nijel@bitbucket.org/nijel/weblate-test'
+from weblate.trans.tests.utils import RepoTestMixin, create_test_user
+from weblate.utils.django_hacks import immediate_on_commit, immediate_on_commit_leave
+from weblate.utils.files import remove_tree
+from weblate.utils.state import STATE_TRANSLATED
 
 
-class RepoTestCase(TestCase):
-    """
-    Generic class for tests working with repositories.
-    """
+def fixup_languages_seq():
+    # Reset sequence for Language and Plural objects as
+    # we're manipulating with them in FixtureTestCase.setUpTestData
+    # and that seems to affect sequence for other tests as well
+    # on some PostgreSQL versions (probably sequence is not rolled back
+    # in a transaction).
+    commands = connection.ops.sequence_reset_sql(no_style(), [Language, Plural])
+    if commands:
+        with connection.cursor() as cursor:
+            for sql in commands:
+                cursor.execute(sql)
+    # Invalidate object cache for languages
+    Language.objects.flush_object_cache()
+
+
+class BaseTestCase(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        fixup_languages_seq()
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        immediate_on_commit(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        immediate_on_commit_leave(cls)
+
+
+class BaseLiveServerTestCase(LiveServerTestCase):
+    @classmethod
+    def setUpTestData(cls):
+        fixup_languages_seq()
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        immediate_on_commit(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        immediate_on_commit_leave(cls)
+
+
+class RepoTestCase(BaseTestCase, RepoTestMixin):
+    """Generic class for tests working with repositories."""
+
     def setUp(self):
-        # Path where to clone remote repo for tests
-        self.git_base_repo_path = os.path.join(
-            settings.DATA_DIR,
-            'test-base-repo.git'
-        )
-        # Repository on which tests will be performed
-        self.git_repo_path = os.path.join(
-            settings.DATA_DIR,
-            'test-repo.git'
-        )
-
-        # Path where to clone remote repo for tests
-        self.hg_base_repo_path = os.path.join(
-            settings.DATA_DIR,
-            'test-base-repo.hg'
-        )
-        # Repository on which tests will be performed
-        self.hg_repo_path = os.path.join(
-            settings.DATA_DIR,
-            'test-repo.hg'
-        )
-
-        # Clone repo for testing
-        if not os.path.exists(self.git_base_repo_path):
-            print(
-                'Cloning Git test repository to {0}...'.format(
-                    self.git_base_repo_path
-                )
-            )
-            GitRepository.clone(
-                GIT_URL,
-                self.git_base_repo_path,
-                bare=True
-            )
-
-        # Remove possibly existing directory
-        if os.path.exists(self.git_repo_path):
-            shutil.rmtree(self.git_repo_path)
-
-        # Create repository copy for the test
-        shutil.copytree(self.git_base_repo_path, self.git_repo_path)
-
-        # Clone repo for testing
-        if not os.path.exists(self.hg_base_repo_path):
-            print(
-                'Cloning Mercurial test repository to {0}...'.format(
-                    self.hg_base_repo_path
-                )
-            )
-            HgRepository.clone(
-                HG_URL,
-                self.hg_base_repo_path,
-                bare=True
-            )
-
-        # Remove possibly existing directory
-        if os.path.exists(self.hg_repo_path):
-            shutil.rmtree(self.hg_repo_path)
-
-        # Create repository copy for the test
-        shutil.copytree(self.hg_base_repo_path, self.hg_repo_path)
-
-        # Remove possibly existing project directory
-        test_repo_path = os.path.join(settings.DATA_DIR, 'vcs', 'test')
-        if os.path.exists(test_repo_path):
-            shutil.rmtree(test_repo_path)
-
-        # Remove indexes
-        clean_indexes()
-
-    def create_project(self):
-        """
-        Creates test project.
-        """
-        project = Project.objects.create(
-            name='Test',
-            slug='test',
-            web='http://weblate.org/'
-        )
-        self.addCleanup(shutil.rmtree, project.get_path(), True)
-        return project
-
-    def _create_subproject(self, file_format, mask, template='',
-                           new_base='', vcs='git', **kwargs):
-        """
-        Creates real test subproject.
-        """
-        project = self.create_project()
-
-        if vcs == 'mercurial':
-            branch = 'default'
-            repo = self.hg_repo_path
-            push = self.hg_repo_path
-        else:
-            branch = 'master'
-            repo = self.git_repo_path
-            push = self.git_repo_path
-
-        return SubProject.objects.create(
-            name='Test',
-            slug='test',
-            project=project,
-            repo=repo,
-            push=push,
-            branch=branch,
-            filemask=mask,
-            template=template,
-            file_format=file_format,
-            repoweb=REPOWEB_URL,
-            save_history=True,
-            new_base=new_base,
-            vcs=vcs,
-            **kwargs
-        )
-
-    def create_subproject(self):
-        """
-        Wrapper method for providing test subproject.
-        """
-        return self._create_subproject(
-            'auto',
-            'po/*.po',
-        )
-
-    def create_po(self):
-        return self._create_subproject(
-            'po',
-            'po/*.po',
-        )
-
-    def create_po_empty(self):
-        return self._create_subproject(
-            'po',
-            'po-empty/*.po',
-            new_base='po-empty/hello.pot',
-            new_lang='add',
-        )
-
-    def create_po_mercurial(self):
-        return self._create_subproject(
-            'po',
-            'po/*.po',
-            vcs='mercurial'
-        )
-
-    def create_po_new_base(self):
-        return self._create_subproject(
-            'po',
-            'po/*.po',
-            new_base='po/hello.pot'
-        )
-
-    def create_po_link(self):
-        return self._create_subproject(
-            'po',
-            'po-link/*.po',
-        )
-
-    def create_po_mono(self):
-        return self._create_subproject(
-            'po-mono',
-            'po-mono/*.po',
-            'po-mono/en.po',
-        )
-
-    def create_ts(self, suffix=''):
-        return self._create_subproject(
-            'ts',
-            'ts{0}/*.ts'.format(suffix),
-        )
-
-    def create_ts_mono(self):
-        return self._create_subproject(
-            'ts',
-            'ts-mono/*.ts',
-            'ts-mono/en.ts',
-        )
-
-    def create_iphone(self):
-        return self._create_subproject(
-            'strings',
-            'iphone/*.lproj/Localizable.strings',
-        )
-
-    def create_android(self):
-        return self._create_subproject(
-            'aresource',
-            'android/values-*/strings.xml',
-            'android/values/strings.xml',
-        )
-
-    def create_json(self):
-        return self._create_subproject(
-            'json',
-            'json/*.json',
-        )
-
-    def create_json_mono(self):
-        return self._create_subproject(
-            'json',
-            'json-mono/*.json',
-            'json-mono/en.json',
-        )
-
-    def create_java(self):
-        return self._create_subproject(
-            'properties',
-            'java/swing_messages_*.properties',
-            'java/swing_messages.properties',
-        )
-
-    def create_xliff(self, name='default'):
-        return self._create_subproject(
-            'xliff',
-            'xliff/*/%s.xlf' % name,
-        )
-
-    def create_link(self):
-        parent = self.create_iphone()
-        return SubProject.objects.create(
-            name='Test2',
-            slug='test2',
-            project=parent.project,
-            repo='weblate://test/test',
-            file_format='po',
-            filemask='po/*.po',
-        )
+        self.clone_test_repos()
 
 
 class ProjectTest(RepoTestCase):
-    """
-    Project object testing.
-    """
+    """Project object testing."""
 
     def test_create(self):
         project = self.create_project()
-        self.assertTrue(os.path.exists(project.get_path()))
-        self.assertTrue(project.slug in project.get_path())
+        self.assertTrue(os.path.exists(project.full_path))
+        self.assertTrue(project.slug in project.full_path)
 
     def test_rename(self):
-        project = self.create_project()
-        old_path = project.get_path()
+        component = self.create_link()
+        self.assertTrue(Component.objects.filter(repo="weblate://test/test").exists())
+        project = component.project
+        old_path = project.full_path
         self.assertTrue(os.path.exists(old_path))
-        project.slug = 'changed'
+        self.assertTrue(
+            os.path.exists(
+                component.translation_set.get(language_code="cs").get_filename()
+            )
+        )
+        project.name = "Changed"
+        project.slug = "changed"
         project.save()
-        new_path = project.get_path()
-        self.addCleanup(shutil.rmtree, new_path, True)
+        new_path = project.full_path
+        self.addCleanup(remove_tree, new_path, True)
         self.assertFalse(os.path.exists(old_path))
         self.assertTrue(os.path.exists(new_path))
+        self.assertTrue(
+            Component.objects.filter(repo="weblate://changed/test").exists()
+        )
+        self.assertFalse(Component.objects.filter(repo="weblate://test/test").exists())
+        component = Component.objects.get(pk=component.pk)
+        self.assertTrue(
+            os.path.exists(
+                component.translation_set.get(language_code="cs").get_filename()
+            )
+        )
 
     def test_delete(self):
         project = self.create_project()
-        self.assertTrue(os.path.exists(project.get_path()))
+        self.assertTrue(os.path.exists(project.full_path))
         project.delete()
-        self.assertFalse(os.path.exists(project.get_path()))
+        self.assertFalse(os.path.exists(project.full_path))
+
+    def test_delete_votes(self):
+        with transaction.atomic():
+            component = self.create_po(
+                suggestion_voting=True, suggestion_autoaccept=True
+            )
+            user = create_test_user()
+            translation = component.translation_set.get(language_code="cs")
+            unit = translation.unit_set.first()
+            suggestion = Suggestion.objects.add(unit, "Test", None)
+            Vote.objects.create(suggestion=suggestion, value=Vote.POSITIVE, user=user)
+        component.project.delete()
 
     def test_delete_all(self):
         project = self.create_project()
-        self.assertTrue(os.path.exists(project.get_path()))
+        self.assertTrue(os.path.exists(project.full_path))
         Project.objects.all().delete()
-        self.assertFalse(os.path.exists(project.get_path()))
-
-    def test_wrong_path(self):
-        project = self.create_project()
-
-        with OverrideSettings(DATA_DIR='/weblate-nonexisting-path'):
-            # Invalidate cache, pylint: disable=W0212
-            project._dir_path = None
-
-            self.assertRaisesMessage(
-                ValidationError,
-                'Could not create project directory',
-                project.full_clean
-            )
+        self.assertFalse(os.path.exists(project.full_path))
 
     def test_acl(self):
-        """
-        Test for ACL handling.
-        """
+        """Test for ACL handling."""
         # Create user to verify ACL
-        user = User.objects.create_user(
-            username='testuser',
-            password='testpassword'
-        )
+        user = create_test_user()
 
         # Create project
         project = self.create_project()
 
         # Enable ACL
-        project.enable_acl = True
+        project.access_control = Project.ACCESS_PRIVATE
         project.save()
 
         # Check user does not have access
-        self.assertFalse(project.has_acl(user))
+        self.assertFalse(user.can_access_project(project))
 
-        # Add ACL
-        permission = Permission.objects.get(codename='weblate_acl_test')
-        user.user_permissions.add(permission)
+        # Add to ACL group
+        user.groups.add(Group.objects.get(name="Test@Translate"))
 
         # Need to fetch user again to clear permission cache
-        user = User.objects.get(username='testuser')
+        user = User.objects.get(username="testuser")
 
         # We now should have access
-        self.assertTrue(project.has_acl(user))
-
-
-class SubProjectTest(RepoTestCase):
-    """
-    SubProject object testing.
-    """
-    def verify_subproject(self, project, translations, lang=None, units=0,
-                          unit='Hello, world!\n', fail=False):
-        # Validation
-        if fail:
-            self.assertRaises(
-                ValidationError,
-                project.full_clean
-            )
-        else:
-            project.full_clean()
-        # Correct path
-        self.assertTrue(os.path.exists(project.get_path()))
-        # Count translations
-        self.assertEqual(
-            project.translation_set.count(), translations
-        )
-        if lang is not None:
-            # Grab translation
-            translation = project.translation_set.get(language_code=lang)
-            # Count units in it
-            self.assertEqual(translation.unit_set.count(), units)
-            # Check whether unit exists
-            self.assertTrue(translation.unit_set.filter(source=unit).exists())
-
-    def test_create(self):
-        project = self.create_subproject()
-        self.verify_subproject(project, 3, 'cs', 4)
-        self.assertTrue(os.path.exists(project.get_path()))
-
-    def test_create_dot(self):
-        project = self._create_subproject(
-            'auto',
-            './po/*.po',
-        )
-        self.verify_subproject(project, 3, 'cs', 4)
-        self.assertTrue(os.path.exists(project.get_path()))
-        self.assertEqual('po/*.po', project.filemask)
-
-    def test_rename(self):
-        subproject = self.create_subproject()
-        old_path = subproject.get_path()
-        self.assertTrue(os.path.exists(old_path))
-        subproject.slug = 'changed'
-        subproject.save()
-        self.assertFalse(os.path.exists(old_path))
-        self.assertTrue(os.path.exists(subproject.get_path()))
-
-    def test_delete(self):
-        project = self.create_subproject()
-        self.assertTrue(os.path.exists(project.get_path()))
-        project.delete()
-        self.assertFalse(os.path.exists(project.get_path()))
-
-    def test_delete_link(self):
-        project = self.create_link()
-        main_project = SubProject.objects.get(slug='test')
-        self.assertTrue(os.path.exists(main_project.get_path()))
-        project.delete()
-        self.assertTrue(os.path.exists(main_project.get_path()))
-
-    def test_delete_all(self):
-        project = self.create_subproject()
-        self.assertTrue(os.path.exists(project.get_path()))
-        SubProject.objects.all().delete()
-        self.assertFalse(os.path.exists(project.get_path()))
-
-    def test_create_iphone(self):
-        project = self.create_iphone()
-        self.verify_subproject(project, 1, 'cs', 4)
-
-    def test_create_ts(self):
-        project = self.create_ts('-translated')
-        self.verify_subproject(project, 1, 'cs', 4)
-
-        unit = Unit.objects.get(source__startswith='Orangutan')
-        self.assertTrue(unit.is_plural())
-        self.assertFalse(unit.translated)
-        self.assertFalse(unit.fuzzy)
-
-        unit = Unit.objects.get(source__startswith='Hello')
-        self.assertFalse(unit.is_plural())
-        self.assertTrue(unit.translated)
-        self.assertFalse(unit.fuzzy)
-        self.assertEqual(unit.target, 'Hello, world!\n')
-
-        unit = Unit.objects.get(source__startswith='Thank ')
-        self.assertFalse(unit.is_plural())
-        self.assertFalse(unit.translated)
-        self.assertTrue(unit.fuzzy)
-        self.assertEqual(unit.target, 'Thanks')
-
-    def test_create_ts_mono(self):
-        project = self.create_ts_mono()
-        self.verify_subproject(project, 2, 'cs', 4)
-
-    def test_create_po_pot(self):
-        project = self._create_subproject(
-            'po',
-            'po/*.po',
-            'po/project.pot'
-        )
-        self.verify_subproject(project, 3, 'cs', 4, fail=True)
-
-    def test_create_filtered(self):
-        project = self._create_subproject(
-            'po',
-            'po/*.po',
-            language_regex='^cs$',
-        )
-        self.verify_subproject(project, 1, 'cs', 4)
-
-    def test_create_auto_pot(self):
-        project = self._create_subproject(
-            'auto',
-            'po/*.po',
-            'po/project.pot'
-        )
-        self.verify_subproject(project, 3, 'cs', 4, fail=True)
-
-    def test_create_po(self):
-        project = self.create_po()
-        self.verify_subproject(project, 3, 'cs', 4)
-
-    def test_create_po_mercurial(self):
-        project = self.create_po_mercurial()
-        self.verify_subproject(project, 3, 'cs', 4)
-
-    def test_create_po_empty(self):
-        project = self.create_po_empty()
-        self.verify_subproject(project, 0)
-
-    def test_create_po_link(self):
-        project = self.create_po_link()
-        self.verify_subproject(project, 4, 'cs', 4)
-
-    def test_create_po_mono(self):
-        project = self.create_po_mono()
-        self.verify_subproject(project, 4, 'cs', 4)
-
-    def test_create_android(self):
-        project = self.create_android()
-        self.verify_subproject(project, 2, 'cs', 4)
-
-    def test_create_json(self):
-        project = self.create_json()
-        self.verify_subproject(project, 1, 'cs', 4)
-
-    def test_create_json_mono(self):
-        project = self.create_json_mono()
-        self.verify_subproject(project, 2, 'cs', 4)
-
-    def test_create_java(self):
-        project = self.create_java()
-        self.verify_subproject(project, 3, 'cs', 4)
-
-    def test_create_xliff(self):
-        project = self.create_xliff()
-        self.verify_subproject(project, 1, 'cs', 4)
-
-    def test_create_xliff_dph(self):
-        project = self.create_xliff('DPH')
-        self.verify_subproject(project, 1, 'en', 9, 'DPH')
-
-    def test_create_xliff_empty(self):
-        project = self.create_xliff('EMPTY')
-        self.verify_subproject(project, 1, 'en', 6, 'DPH')
-
-    def test_create_xliff_resname(self):
-        project = self.create_xliff('Resname')
-        self.verify_subproject(project, 1, 'en', 2, 'Hi')
-
-    def test_link(self):
-        project = self.create_link()
-        self.verify_subproject(project, 3, 'cs', 4)
-
-    def test_extra_file(self):
-        """
-        Extra commit file validation.
-        """
-        project = self.create_subproject()
-        project.full_clean()
-
-        project.extra_commit_file = 'locale/list.txt'
-        project.full_clean()
-
-        project.extra_commit_file = 'locale/%(language)s.txt'
-        project.full_clean()
-
-        project.extra_commit_file = 'locale/%(bar)s.txt'
-        self.assertRaisesMessage(
-            ValidationError,
-            "Bad format string ('bar')",
-            project.full_clean
-        )
-
-    def test_check_flags(self):
-        """
-        Check flags validation.
-        """
-        project = self.create_subproject()
-        project.full_clean()
-
-        project.check_flags = 'ignore-inconsistent'
-        project.full_clean()
-
-        project.check_flags = 'rst-text,ignore-inconsistent'
-        project.full_clean()
-
-        project.check_flags = 'nonsense'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Invalid check flag: "nonsense"',
-            project.full_clean
-        )
-
-        project.check_flags = 'rst-text,ignore-nonsense'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Invalid check flag: "ignore-nonsense"',
-            project.full_clean
-        )
-
-    def test_validation(self):
-        project = self.create_subproject()
-        # Correct project
-        project.full_clean()
-
-        # Invalid commit message
-        project.commit_message = '%(foo)s'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Bad format string',
-            project.full_clean
-        )
-
-        # Invalid mask
-        project.filemask = 'foo/x.po'
-        self.assertRaisesMessage(
-            ValidationError,
-            'File mask does not contain * as a language placeholder!',
-            project.full_clean
-        )
-        # Not matching mask
-        project.filemask = 'foo/*.po'
-        self.assertRaisesMessage(
-            ValidationError,
-            'The mask did not match any files!',
-            project.full_clean
-        )
-        # Unknown file format
-        project.filemask = 'iphone/*.lproj/Localizable.strings'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Format of 1 matched files could not be recognized.',
-            project.full_clean
-        )
-
-        # Repoweb
-        project.repoweb = 'http://%(foo)s/%(bar)s/%72'
-        self.assertRaisesMessage(
-            ValidationError,
-            "Bad format string ('foo')",
-            project.full_clean
-        )
-        project.repoweb = ''
-
-        # Bad link
-        project.repo = 'weblate://foo'
-        project.push = ''
-        self.assertRaisesMessage(
-            ValidationError,
-            'Invalid link to a Weblate project, '
-            'use weblate://project/component.',
-            project.full_clean
-        )
-
-        # Bad link
-        project.repo = 'weblate://foo/bar'
-        project.push = ''
-        self.assertRaisesMessage(
-            ValidationError,
-            'Invalid link to a Weblate project, '
-            'use weblate://project/component.',
-            project.full_clean
-        )
-
-        # Bad link
-        project.repo = 'weblate://test/test'
-        project.push = ''
-        self.assertRaisesMessage(
-            ValidationError,
-            'Invalid link to a Weblate project, '
-            'can not link to self!',
-            project.full_clean
-        )
-
-    def test_validation_mono(self):
-        project = self.create_po_mono()
-        # Correct project
-        project.full_clean()
-        # Not existing file
-        project.template = 'not-existing'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Template file not found!',
-            project.full_clean
-        )
-
-    def test_validation_languge_re(self):
-        subproject = self.create_subproject()
-        subproject.language_regex = '[-'
-        self.assertRaisesMessage(
-            ValidationError,
-            'Failed to compile: unexpected end of regular expression',
-            subproject.full_clean
-        )
-
-    def test_validation_newlang(self):
-        subproject = self.create_subproject()
-        subproject.new_base = 'po/project.pot'
-        subproject.save()
-
-        # Check that it warns about unused pot
-        self.assertRaisesMessage(
-            ValidationError,
-            'Base file for new translations is not used '
-            'because of component settings.',
-            subproject.full_clean
-        )
-
-        subproject.new_lang = 'add'
-        subproject.save()
-
-        # Check that it warns about not supported format
-        self.assertRaisesMessage(
-            ValidationError,
-            'Chosen file format does not support adding new '
-            'translations as chosen in project settings.',
-            subproject.full_clean
-        )
-
-        subproject.file_format = 'po'
-        subproject.save()
-
-        # Clean class cache, pylint: disable=W0212
-        subproject._file_format = None
-
-        # With correct format it should validate
-        subproject.full_clean()
-
-    def test_change_to_mono(self):
-        """Test swtiching to monolingual format on the fly."""
-        component = self._create_subproject(
-            'po',
-            'po-mono/*.po',
-        )
-        self.assertEqual(component.translation_set.count(), 4)
-        component.file_format = 'po-mono'
-        component.template = 'po-mono/en.po'
-        component.save()
-        self.assertEqual(component.translation_set.count(), 4)
-
-    def test_lang_code(self):
-        subproject = SubProject()
-        subproject.filemask = 'Solution/Project/Resources.*.resx'
-        self.assertEqual(
-            subproject.get_lang_code('Solution/Project/Resources.es-mx.resx'),
-            'es-mx'
-        )
-        self.assertEqual(
-            subproject.get_lang_code('Solution/Project/Resources.resx'),
-            ''
-        )
-        self.assertRaisesMessage(
-            ValidationError,
-            'Got empty language code for '
-            'Solution/Project/Resources.resx, please check filemask!',
-            subproject.clean_lang_codes,
-            [
-                'Solution/Project/Resources.resx',
-                'Solution/Project/Resources.de.resx',
-                'Solution/Project/Resources.es.resx',
-                'Solution/Project/Resources.es-mx.resx',
-                'Solution/Project/Resources.fr.resx',
-                'Solution/Project/Resources.fr-fr.resx',
-            ]
-        )
-
-    def test_lang_code_template(self):
-        subproject = SubProject()
-        subproject.filemask = 'Solution/Project/Resources.*.resx'
-        subproject.template = 'Solution/Project/Resources.resx'
-        self.assertEqual(
-            subproject.get_lang_code('Solution/Project/Resources.resx'),
-            'en'
-        )
+        self.assertTrue(user.can_access_project(project))
 
 
 class TranslationTest(RepoTestCase):
-    """
-    Translation testing.
-    """
-    def test_basic(self):
-        project = self.create_subproject()
-        translation = project.translation_set.get(language_code='cs')
-        self.assertEqual(translation.translated, 0)
-        self.assertEqual(translation.total, 4)
-        self.assertEqual(translation.fuzzy, 0)
+    """Translation testing."""
 
-    def test_extra_file(self):
-        """
-        Test extra commit file handling.
-        """
-        subproject = self.create_subproject()
-        subproject.pre_commit_script = get_test_file(
-            '../../../../examples/hook-generate-mo'
-        )
-        appsettings.PRE_COMMIT_SCRIPT_CHOICES.append(
-            (subproject.pre_commit_script, 'hook-generate-mo')
-        )
-        subproject.pre_commit_script = get_test_file(
-            '../../../../examples/hook-update-linguas'
-        )
-        appsettings.PRE_COMMIT_SCRIPT_CHOICES.append(
-            (subproject.pre_commit_script, 'hook-update-linguas')
-        )
-        subproject.extra_commit_file = 'po/%(language)s.mo\npo/LINGUAS'
-        subproject.save()
-        subproject.full_clean()
-        translation = subproject.translation_set.get(language_code='cs')
-        # change backend file
-        with open(translation.get_filename(), 'a') as handle:
-            handle.write(' ')
-        # Test committing
-        translation.git_commit(
-            None, 'TEST <test@example.net>', timezone.now(),
-            force_commit=True
-        )
-        linguas = os.path.join(subproject.get_path(), 'po', 'LINGUAS')
-        with open(linguas, 'r') as handle:
-            data = handle.read()
-            self.assertIn('\ncs\n', data)
-        self.assertFalse(translation.repo_needs_commit())
+    def test_basic(self):
+        component = self.create_component()
+        # Verify source translation
+        translation = component.source_translation
+        self.assertFalse(translation.unit_set.filter(num_words=0).exists())
+        self.assertEqual(translation.stats.translated, 4)
+        self.assertEqual(translation.stats.all, 4)
+        self.assertEqual(translation.stats.fuzzy, 0)
+        self.assertEqual(translation.stats.all_words, 15)
+        # Verify target translation
+        translation = component.translation_set.get(language_code="cs")
+        self.assertEqual(translation.stats.translated, 0)
+        self.assertEqual(translation.stats.all, 4)
+        self.assertEqual(translation.stats.fuzzy, 0)
+        self.assertEqual(translation.stats.all_words, 15)
 
     def test_validation(self):
-        """
-        Translation validation
-        """
-        project = self.create_subproject()
-        translation = project.translation_set.get(language_code='cs')
+        """Translation validation."""
+        component = self.create_component()
+        translation = component.translation_set.get(language_code="cs")
         translation.full_clean()
 
     def test_update_stats(self):
-        """
-        Check update stats with no units.
-        """
-        project = self.create_subproject()
-        translation = project.translation_set.get(language_code='cs')
-        translation.update_stats()
+        """Check update stats with no units."""
+        component = self.create_component()
+        translation = component.translation_set.get(language_code="cs")
+        self.assertEqual(translation.stats.all, 4)
+        self.assertEqual(translation.stats.all_words, 15)
         translation.unit_set.all().delete()
-        translation.update_stats()
+        translation.invalidate_cache()
+        self.assertEqual(translation.stats.all, 0)
+        self.assertEqual(translation.stats.all_words, 0)
+
+    def test_commit_groupping(self):
+        component = self.create_component()
+        translation = component.translation_set.get(language_code="cs")
+        user = create_test_user()
+        start_rev = component.repository.last_revision
+        # Initial translation
+        for unit in translation.unit_set.iterator():
+            unit.translate(user, "test2", STATE_TRANSLATED)
+        # Translation completed, no commit forced
+        self.assertEqual(start_rev, component.repository.last_revision)
+        # Translation from same author should not trigger commit
+        for unit in translation.unit_set.iterator():
+            unit.translate(user, "test3", STATE_TRANSLATED)
+        for unit in translation.unit_set.iterator():
+            unit.translate(user, "test4", STATE_TRANSLATED)
+        self.assertEqual(start_rev, component.repository.last_revision)
+        # Translation from other author should trigger commmit
+        for i, unit in enumerate(translation.unit_set.iterator()):
+            user = User.objects.create(
+                full_name=f"User {unit.pk}",
+                username=f"user-{unit.pk}",
+                email=f"{unit.pk}@example.com",
+            )
+            # Fetch current pending state, it might have been
+            # updated by background commit
+            unit.pending = Unit.objects.get(pk=unit.pk).pending
+            unit.translate(user, "test", STATE_TRANSLATED)
+            if i == 0:
+                # First edit should trigger commit
+                self.assertNotEqual(start_rev, component.repository.last_revision)
+                start_rev = component.repository.last_revision
+
+        # No further commit now
+        self.assertEqual(start_rev, component.repository.last_revision)
+
+        # Commit pending changes
+        translation.commit_pending("test", None)
+        self.assertNotEqual(start_rev, component.repository.last_revision)
 
 
-class WhiteboardMessageTest(TestCase):
-    """Test(s) for WhiteboardMessage model."""
+class ComponentListTest(RepoTestCase):
+    """Test(s) for ComponentList model."""
 
-    def test_can_be_imported(self):
-        """Test that whiteboard model can be imported.
+    def test_slug(self):
+        """Test ComponentList slug."""
+        clist = ComponentList()
+        clist.slug = "slug"
+        self.assertEqual(clist.tab_slug(), "list-slug")
 
-        Rather dumb test just to make sure there are no obvious parsing errors.
-        """
-        WhiteboardMessage()
+    def test_auto(self):
+        self.create_component()
+        clist = ComponentList.objects.create(name="Name", slug="slug")
+        AutoComponentList.objects.create(
+            project_match="^.*$", component_match="^.*$", componentlist=clist
+        )
+        self.assertEqual(clist.components.count(), 2)
+
+    def test_auto_create(self):
+        clist = ComponentList.objects.create(name="Name", slug="slug")
+        AutoComponentList.objects.create(
+            project_match="^.*$", component_match="^.*$", componentlist=clist
+        )
+        self.assertEqual(clist.components.count(), 0)
+        self.create_component()
+        self.assertEqual(clist.components.count(), 2)
+
+    def test_auto_nomatch(self):
+        self.create_component()
+        clist = ComponentList.objects.create(name="Name", slug="slug")
+        AutoComponentList.objects.create(
+            project_match="^none$", component_match="^.*$", componentlist=clist
+        )
+        self.assertEqual(clist.components.count(), 0)
 
 
 class ModelTestCase(RepoTestCase):
     def setUp(self):
-        super(ModelTestCase, self).setUp()
-        self.create_subproject()
+        super().setUp()
+        self.component = self.create_component()
 
 
-class SourceTest(ModelTestCase):
-    """
-    Source objects testing.
-    """
-    def test_exists(self):
-        self.assertTrue(Source.objects.exists())
+class SourceUnitTest(ModelTestCase):
+    """Source Unit objects testing."""
 
-    def test_source_info(self):
-        unit = Unit.objects.all()[0]
-        self.assertIsNotNone(unit.source_info)
+    def test_source_unit(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        self.assertIsNotNone(unit.source_unit)
+        unit = Unit.objects.filter(translation__language_code="en")[0]
+        self.assertEqual(unit.source_unit, unit)
 
     def test_priority(self):
-        unit = Unit.objects.all()[0]
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
         self.assertEqual(unit.priority, 100)
-        source = unit.source_info
-        source.priority = 200
+        source = unit.source_unit
+        source.extra_flags = "priority:200"
         source.save()
         unit2 = Unit.objects.get(pk=unit.pk)
         self.assertEqual(unit2.priority, 200)
 
     def test_check_flags(self):
-        """
-        Setting of Source check_flags changes checks for related units.
-        """
+        """Setting of Source check_flags changes checks for related units."""
         self.assertEqual(Check.objects.count(), 3)
         check = Check.objects.all()[0]
-        unit = get_related_units(check)[0]
-        source = unit.source_info
-        source.check_flags = 'ignore-{0}'.format(check.check)
+        unit = check.unit
+        self.assertEqual(self.component.stats.allchecks, 3)
+        source = unit.source_unit
+        source.extra_flags = f"ignore-{check.check}"
         source.save()
         self.assertEqual(Check.objects.count(), 0)
+        self.assertEqual(Component.objects.get(pk=self.component.pk).stats.allchecks, 0)
 
 
 class UnitTest(ModelTestCase):
-    @OverrideSettings(MT_WEBLATE_LIMIT=15)
-    def test_more_like(self):
-        unit = Unit.objects.all()[0]
-        self.assertEqual(Unit.objects.more_like_this(unit).count(), 0)
+    def test_newlines(self):
+        user = create_test_user()
+        unit = Unit.objects.filter(
+            translation__language_code="cs", source="Hello, world!\n"
+        )[0]
+        unit.translate(user, "new\nstring\n", STATE_TRANSLATED)
+        self.assertEqual(unit.target, "new\nstring\n")
+        # New object to clear all_flags cache
+        unit = Unit.objects.get(pk=unit.pk)
+        unit.flags = "dos-eol"
+        unit.translate(user, "new\nstring", STATE_TRANSLATED)
+        self.assertEqual(unit.target, "new\r\nstring\r\n")
+        unit.translate(user, "other\r\nstring", STATE_TRANSLATED)
+        self.assertEqual(unit.target, "other\r\nstring\r\n")
 
-    @OverrideSettings(MT_WEBLATE_LIMIT=0)
-    def test_more_like_timeout(self):
-        unit = Unit.objects.all()[0]
-        self.assertRaisesMessage(
-            Exception, 'Request timed out.', Unit.objects.more_like_this, unit
+    def test_flags(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.flags = "no-wrap, ignore-same"
+        self.assertEqual(unit.all_flags.items(), {"no-wrap", "ignore-same"})
+
+    def test_order_by_request(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        source = unit.source_unit
+        source.extra_flags = "priority:200"
+        source.save()
+
+        # test both ascending and descending order works
+        unit1 = Unit.objects.filter(translation__language_code="cs")
+        unit1 = unit1.order_by_request({"sort_by": "-priority"})
+        self.assertEqual(unit1[0].priority, 200)
+        unit1 = Unit.objects.filter(translation__language_code="cs")
+        unit1 = unit1.order_by_request({"sort_by": "priority"})
+        self.assertEqual(unit1[0].priority, 100)
+
+        # test if invalid sorting, then sorted in default order
+        unit2 = Unit.objects.filter(translation__language_code="cs")
+        unit2 = unit2.order()
+        unit3 = Unit.objects.filter(translation__language_code="cs")
+        unit3 = unit3.order_by_request({"sort_by": "invalid"})
+        self.assertEqual(unit3[0], unit2[0])
+
+        # test sorting by count
+        unit4 = Unit.objects.filter(translation__language_code="cs")[2]
+        Comment.objects.create(unit=unit4, comment="Foo")
+        unit5 = Unit.objects.filter(translation__language_code="cs")
+        unit5 = unit5.order_by_request({"sort_by": "-num_comments"})
+        self.assertEqual(unit5[0].comment_set.count(), 1)
+        unit5 = Unit.objects.filter(translation__language_code="cs")
+        unit5 = unit5.order_by_request({"sort_by": "num_comments"})
+        self.assertEqual(unit5[0].comment_set.count(), 0)
+
+        # check all order options produce valid queryset
+        order_options = [
+            "priority",
+            "position",
+            "context",
+            "num_words",
+            "labels",
+            "timestamp",
+            "num_failing_checks",
+        ]
+        for order_option in order_options:
+            ordered_unit = Unit.objects.filter(
+                translation__language_code="cs"
+            ).order_by_request({"sort_by": order_option})
+            ordered_desc_unit = Unit.objects.filter(
+                translation__language_code="cs"
+            ).order_by_request({"sort_by": f"-{order_option}"})
+            self.assertEqual(len(ordered_unit), 4)
+            self.assertEqual(len(ordered_desc_unit), 4)
+
+        # check sorting with multiple options work
+        multiple_ordered_unit = Unit.objects.filter(
+            translation__language_code="cs"
+        ).order_by_request({"sort_by": "position,timestamp"})
+        self.assertEqual(multiple_ordered_unit.count(), 4)
+
+    def test_get_max_length_no_pk(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.pk = False
+        self.assertEqual(unit.get_max_length(), 10000)
+
+    def test_get_max_length_empty_source_default_fallback(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.pk = True
+        unit.source = ""
+        self.assertEqual(unit.get_max_length(), 100)
+
+    def test_get_max_length_default_fallback(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.pk = True
+        unit.source = "My test source"
+        self.assertEqual(unit.get_max_length(), 140)
+
+    @override_settings(LIMIT_TRANSLATION_LENGTH_BY_SOURCE_LENGTH=False)
+    def test_get_max_length_empty_source_disabled_default_fallback(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.pk = True
+        unit.source = ""
+        self.assertEqual(unit.get_max_length(), 10000)
+
+    @override_settings(LIMIT_TRANSLATION_LENGTH_BY_SOURCE_LENGTH=False)
+    def test_get_max_length_disabled_default_fallback(self):
+        unit = Unit.objects.filter(translation__language_code="cs")[0]
+        unit.pk = True
+        unit.source = "My test source"
+        self.assertEqual(unit.get_max_length(), 10000)
+
+
+class AnnouncementTest(ModelTestCase):
+    """Test(s) for Announcement model."""
+
+    def setUp(self):
+        super().setUp()
+        Announcement.objects.create(
+            language=Language.objects.get(code="cs"), message="test cs"
+        )
+        Announcement.objects.create(
+            language=Language.objects.get(code="de"), message="test de"
+        )
+        Announcement.objects.create(
+            project=self.component.project, message="test project"
+        )
+        Announcement.objects.create(
+            component=self.component,
+            project=self.component.project,
+            message="test component",
+        )
+        Announcement.objects.create(message="test global")
+
+    def verify_filter(self, messages, count, message=None):
+        """Verify whether messages have given count and first contains string."""
+        self.assertEqual(len(messages), count)
+        if message is not None:
+            self.assertEqual(messages[0].message, message)
+
+    def test_contextfilter_global(self):
+        self.verify_filter(Announcement.objects.context_filter(), 1, "test global")
+
+    def test_contextfilter_project(self):
+        self.verify_filter(
+            Announcement.objects.context_filter(project=self.component.project),
+            1,
+            "test project",
         )
 
-    @OverrideSettings(MT_WEBLATE_LIMIT=-1)
-    def test_more_like_no_fork(self):
-        unit = Unit.objects.all()[0]
-        self.assertEqual(Unit.objects.more_like_this(unit).count(), 0)
+    def test_contextfilter_component(self):
+        self.verify_filter(
+            Announcement.objects.context_filter(component=self.component), 2
+        )
+
+    def test_contextfilter_translation(self):
+        self.verify_filter(
+            Announcement.objects.context_filter(
+                component=self.component, language=Language.objects.get(code="cs")
+            ),
+            3,
+        )
+
+    def test_contextfilter_language(self):
+        self.verify_filter(
+            Announcement.objects.context_filter(
+                language=Language.objects.get(code="cs")
+            ),
+            1,
+            "test cs",
+        )
+        self.verify_filter(
+            Announcement.objects.context_filter(
+                language=Language.objects.get(code="de")
+            ),
+            1,
+            "test de",
+        )

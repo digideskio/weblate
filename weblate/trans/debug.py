@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,40 +14,29 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-'''
-Wrapper to include useful information in error mails.
-'''
+"""Wrapper to include useful information in error mails."""
 
 from django.views.debug import SafeExceptionReporterFilter
-from weblate import get_versions_string
+
+from weblate.utils.requirements import get_versions_list
 
 
 class WeblateExceptionReporterFilter(SafeExceptionReporterFilter):
-    def get_request_repr(self, request):
-        if request is None:
-            return repr(None)
+    def get_post_parameters(self, request):
+        if hasattr(request, "META"):
+            meta = request.META
+            if hasattr(request, "user"):
+                meta["WEBLATE_USER"] = repr(request.user.username)
+            else:
+                meta["WEBLATE_USER"] = ""
+            if hasattr(request, "session") and "django_language" in request.session:
+                meta["WEBLATE_LANGUAGE"] = request.session["django_language"]
+            else:
+                meta["WEBLATE_LANGUAGE"] = ""
 
-        result = super(WeblateExceptionReporterFilter, self).get_request_repr(
-            request
-        )
+            for name, _url, version in get_versions_list():
+                meta[f"WEBLATE_VERSION:{name}"] = version
 
-        if (hasattr(request, 'session') and
-                'django_language' in request.session):
-            lang = request.session['django_language']
-        else:
-            lang = None
-
-        if (hasattr(request, 'user') and
-                request.user.is_authenticated()):
-            user = repr(request.user.username)
-        else:
-            user = None
-
-        return '%s\n\nLanguage: %s\nUser: %s\n\nVersions:\n%s' % (
-            result,
-            lang,
-            user,
-            get_versions_string()
-        )
+        return super().get_post_parameters(request)

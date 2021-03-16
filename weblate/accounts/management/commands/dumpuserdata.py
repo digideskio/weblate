@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,59 +14,37 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.core.management.base import BaseCommand, CommandError
-from weblate.accounts.models import Profile
+import argparse
 import json
+
+from django.core.serializers.json import DjangoJSONEncoder
+
+from weblate.accounts.models import Profile
+from weblate.utils.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = 'dumps user data to JSON file'
-    args = '<json-file>'
+    help = "dumps user data to JSON file"
 
-    def handle(self, *args, **options):
-        '''
-        Creates default set of groups and optionally updates them and moves
-        users around to default group.
-        '''
-        if len(args) != 1:
-            raise CommandError('Please specify JSON file to create!')
-
-        data = []
-        fields = (
-            'language',
-            'translated',
-            'suggested',
-        ) + Profile.SUBSCRIPTION_FIELDS
-
-        profiles = Profile.objects.select_related(
-            'user'
-        ).prefetch_related(
-            'subscriptions', 'languages', 'secondary_languages'
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "json-file", type=argparse.FileType("w"), help="File where to export"
         )
 
-        for profile in profiles.iterator():
+    def handle(self, *args, **options):
+        data = []
+
+        profiles = Profile.objects.select_related("user").prefetch_related(
+            "watched", "languages", "secondary_languages"
+        )
+
+        for profile in profiles:
             if not profile.user.is_active:
                 continue
+            data.append(profile.dump_data())
 
-            item = {
-                'username': profile.user.username,
-                'subscriptions': [
-                    p.slug for p in profile.subscriptions.all()
-                ],
-                'languages': [
-                    l.code for l in profile.languages.all()
-                ],
-                'secondary_languages': [
-                    l.code for l in profile.secondary_languages.all()
-                ],
-            }
-
-            for field in fields:
-                item[field] = getattr(profile, field)
-
-            data.append(item)
-
-        json.dump(data, open(args[0], 'w'), indent=2)
+        json.dump(data, options["json-file"], indent=2, cls=DjangoJSONEncoder)
+        options["json-file"].close()

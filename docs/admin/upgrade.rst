@@ -1,309 +1,352 @@
 Upgrading Weblate
 =================
 
-Upgrading
----------
+Docker image upgrades
+---------------------
+
+The official Docker image (see :doc:`install/docker`) has all upgrade steps
+integrated. There are no manual step besides pulling latest version.
 
 .. _generic-upgrade-instructions:
 
 Generic upgrade instructions
-++++++++++++++++++++++++++++
+----------------------------
 
-.. versionchanged:: 1.2
+Before upgrading, please check the current :ref:`requirements` as they might have
+changed. Once all requirements are installed or updated, please adjust your
+:file:`settings.py` to match changes in the configuration (consult
+:file:`settings_example.py` for correct values).
 
-    Since version 1.2 the migration is done using South module, to upgrade to 1.2,
-    please see :ref:`version-specific-instructions`.
+Always check :ref:`version-specific-instructions` before upgrade. In case you
+are skipping some versions, please follow instructions for all versions you are
+skipping in the upgrade. Sometimes it's better to upgrade to some intermediate
+version to ensure a smooth migration. Upgrading across multiple releases should
+work, but is not as well tested as single version upgrades.
 
-.. versionchanged:: 1.9
+.. note::
 
-    Since version 1.9, Weblate also supports Django 1.7 migrations, please check
-    :ref:`django-17` for more information.
+    It is recommended to perform a full database backup prior to upgrade so that you
+    can roll back the database in case upgrade fails, see :doc:`backup`.
 
-.. versionchanged:: 2.3
+#. Stop wsgi and Celery processes. The upgrade can perform incompatible changes in the
+   database, so it is always safer to avoid old processes running while upgrading.
 
-    Since version 2.3, Weblate supports only Django native migrations, South is
-    no longer supported, please check :ref:`django-17` for more information.
+#. Upgrade Weblate code.
 
-Before upgrading, please check current :ref:`requirements` as they might have
-changed.
+   For pip installs it can be achieved by:
 
-To upgrade database structure, you should run:
+   .. code-block:: sh
 
-.. code-block:: sh
+      pip install -U Weblate
 
-    ./manage.py migrate
+   With Git checkout you need to fetch new source code and update your installation:
 
-To collect new static files, run:
+   .. code-block:: sh
 
-.. code-block:: sh
+        cd weblate-src
+        git pull
+        # Update Weblate inside your virtualenv
+        . ~/weblate-env/bin/pip install -e .
+        # Install dependencies directly when not using virtualenv
+        pip install --upgrade -r requirements.txt
 
-    ./manage.py collectstatic --noinput --link
+#. Upgrade configuration file, refer to :file:`settings_example.py` or
+   :ref:`version-specific-instructions` for needed steps.
 
-To upgrade default set of privileges definitions (optional), run:
+#. Upgrade database structure:
 
-.. code-block:: sh
+   .. code-block:: sh
 
-    ./manage.py setupgroups
+        weblate migrate --noinput
 
-To upgrade default set of language definitions (optional), run:
+#. Collect updated static files (see :ref:`server` and :ref:`static-files`):
 
-.. code-block:: sh
+   .. code-block:: sh
 
-    ./manage.py setuplang
+        weblate collectstatic --noinput
+
+#. Compress JavaScript and CSS files (optional, see :ref:`production-compress`):
+
+   .. code-block:: sh
+
+        weblate compress
+
+#. If you are running version from Git, you should also regenerate locale files
+   every time you are upgrading. You can do this by invoking:
+
+   .. code-block:: sh
+
+        weblate compilemessages
+
+#. Verify that your setup is sane (see also :ref:`production`):
+
+   .. code-block:: sh
+
+        weblate check --deploy
+
+#. Restart celery worker (see :ref:`celery`).
+
 
 .. _version-specific-instructions:
 
 Version specific instructions
-+++++++++++++++++++++++++++++
+-----------------------------
 
-Upgrade from 0.5 to 0.6
-~~~~~~~~~~~~~~~~~~~~~~~
+Upgrade from 2.x
+~~~~~~~~~~~~~~~~
 
-On upgrade to version 0.6 you should run :samp:`./manage.py syncdb` and
-:samp:`./manage.py setupgroups --move` to setup access control as described
-in installation section.
-
-Upgrade from 0.6 to 0.7
-~~~~~~~~~~~~~~~~~~~~~~~
-
-On upgrade to version 0.7 you should run :samp:`./manage.py syncdb` to
-setup new tables and :samp:`./manage.py rebuild_index` to build index for
-fulltext search.
-
-Upgrade from 0.7 to 0.8
-~~~~~~~~~~~~~~~~~~~~~~~
-
-On upgrade to version 0.8 you should run :samp:`./manage.py syncdb` to setup
-new tables, :samp:`./manage.py setupgroups` to update privileges setup and
-:samp:`./manage.py rebuild_index` to rebuild index for fulltext search.
-
-Upgrade from 0.8 to 0.9
-~~~~~~~~~~~~~~~~~~~~~~~
-
-On upgrade to version 0.9 file structure has changed. You need to move
-:file:`repos` and :file:`whoosh-index` to :file:`weblate` folder. Also running
-:samp:`./manage.py syncdb`, :samp:`./manage.py setupgroups` and
-:samp:`./manage.py setuplang` is recommended to get latest updates of
-privileges and language definitions.
-
-Upgrade from 0.9 to 1.0
-~~~~~~~~~~~~~~~~~~~~~~~
-
-On upgrade to version 1.0 one field has been added to database, you need to
-invoke following SQL command to adjust it:
-
-.. code-block:: sql
-
-    ALTER TABLE `trans_subproject` ADD `template` VARCHAR(200);
-
-Upgrade from 1.0 (1.1) to 1.2
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-On upgrade to version 1.2, the migration procedure has changed. It now uses
-South for migrating database. To switch to this new migration schema, you need
-to run following commands:
-
-.. code-block:: sh
-
-    ./manage.py syncdb
-    ./manage.py migrate trans 0001 --fake
-    ./manage.py migrate accounts 0001 --fake
-    ./manage.py migrate lang 0001 --fake
-
-Also please note that there are several new requirements and version 0.8 of
-django-registration is now being required, see :ref:`requirements` for more
-details.
-
-Once you have done this, you can use :ref:`generic-upgrade-instructions`.
-
-Upgrade from 1.2 to 1.3
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Since 1.3, :file:`settings.py` is not shipped with Weblate, but only example
-settings as :file:`settings_example.py` it is recommended to use it as new base
-for your setup.
-
-Upgrade from 1.4 to 1.5
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Several internal modules and paths have been renamed and changed, please adjust
-your :file:`settings.py` to match that (consult :file:`settings_example.py` for
-correct values).
-
-* Many modules lost their ``weblate.`` prefix.
-* Checks were moved to submodules.
-* Locales were moved to top level directory.
-
-The migration of database structure to 1.5 might take quite long, it is
-recommended to put your site offline, while the migration is going on.
-
-
-.. note::
-
-    If you have update in same directory, stale :file:`*.pyc` files might be
-    left around and cause various import errors. To recover from this, delete
-    all of them in Weblate's directory, for example by
-    ``find . -name '*.pyc' -delete``.
-
-Upgrade from 1.6 to 1.7
-~~~~~~~~~~~~~~~~~~~~~~~
-
-The migration of database structure to 1.7 might take quite long, it is
-recommended to put your site offline, while the migration is going on.
-
-If you are translating monolingual files, it is recommended to rerun quality
-checks as they might have been wrongly linked to units in previous versions.
-
-Upgrade from 1.7 to 1.8
-~~~~~~~~~~~~~~~~~~~~~~~
-
-The migration of database structure to 1.8 might take quite long, it is
-recommended to put your site offline, while the migration is going on.
-
-Authentication setup has been changed and some internal modules have changed
-name, please adjust your :file:`settings.py` to match that (consult
-:file:`settings_example.py` for correct values).
-
-Also please note that there are several new requirements, see
-:ref:`requirements` for more details.
-
-Upgrade from 1.8 to 1.9
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Several internal modules and paths have been renamed and changed, please adjust
-your :file:`settings.py` to match that (consult :file:`settings_example.py` for
-correct values).
+If you are upgrading from 2.x release, always first upgrade to 3.0.1 and then
+continue upgrading in the 3.x series. Upgrades skipping this step are not
+supported and will break.
 
 .. seealso::
 
-    If you are upgrading to Django 1.7 in same step, please consult
-    :ref:`django-17`.
+   `Upgrade from 2.20 to 3.0 in Weblate 3.0 documentation <https://docs.weblate.org/en/weblate-3.0.1/admin/upgrade.html#upgrade-3>`_
 
-Upgrade from 1.9 to 2.0
-~~~~~~~~~~~~~~~~~~~~~~~
+Upgrade from 3.x
+~~~~~~~~~~~~~~~~
 
-Several internal modules and paths have been renamed and changed, please adjust
-your :file:`settings.py` to match that (consult :file:`settings_example.py` for
-correct values).
-
-This upgrade also requires you to upgrade python-social-auth from 0.1.x to
-0.2.x series, what will most likely to need to fake one of their migrations
-(see `Upgrading PSA with South`_ for more information):
-
-.. code-block:: sh
-
-    ./manage.py migrate --fake default
-
-.. _Upgrading PSA with South: http://psa.matiasaguirre.net/docs/installing.html#django-with-south
+If you are upgrading from 3.x release, always first upgrade to 4.0.4 or 4.1.1
+and then continue upgrading in the 4.x series. Upgrades skipping this step are
+not supported and will break.
 
 .. seealso::
 
-    If you are upgrading to Django 1.7 in same step, please consult
-    :ref:`django-17`.
+   `Upgrade from 3.11 to 4.0 in Weblate 4.0 documentation <https://docs.weblate.org/en/weblate-4.0.4/admin/upgrade.html#upgrade-from-3-11-to-4-0>`_
 
-Upgrade from 2.0 to 2.1
+Upgrade from 4.0 to 4.1
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Please  adjust your :file:`settings.py` to match several changes in the
-configuration (consult :file:`settings_example.py` for correct values).
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
 
-The filesystem paths configuration has changed, the :setting:`GIT_ROOT` and
-:setting:`WHOOSH_INDEX` are gone and now all data resides in
-:setting:`DATA_DIR`. The existing data should be automatically migrated by
-supplied migration, but in case of non standard setup, you might need to move
-these manually.
+Notable configuration or dependencies changes:
 
-.. seealso::
+* There are several changes in :file:`settings_example.py`, most notable middleware changes, please adjust your settings accordingly.
+* There are new file formats, you might want to include them in case you modified the :setting:`WEBLATE_FORMATS`.
+* There are new quality checks, you might want to include them in case you modified the :setting:`CHECK_LIST`.
+* There is change in ``DEFAULT_THROTTLE_CLASSES`` setting to allow reporting of rate limiting in the API.
+* There are some new and updated requirements.
+* There is a change in :setting:`django:INSTALLED_APPS`.
+* The :ref:`deepl` machine translation now defaults to v2 API, you might need to adjust :setting:`MT_DEEPL_API_VERSION` in case your current DeepL subscription does not support that.
 
-    If you are upgrading to Django 1.7 in same step, please consult
-    :ref:`django-17`.
+.. seealso:: :ref:`generic-upgrade-instructions`
 
-Upgrade from 2.1 to 2.2
+Upgrade from 4.1 to 4.2
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Weblate now supports fulltext search on additional fields. In order to make it
-work on existing data you need to update fulltext index by:
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
 
-.. code-block:: sh
+Notable configuration or dependencies changes:
 
-    ./manage.py rebuild_index --clean --all
+* Upgrade from 3.x releases is not longer supported, please upgrade to 4.0 or 4.1 first.
+* There are some new and updated requirements.
+* There are several changes in :file:`settings_example.py`, most notable new middleware and changed application ordering.
+* The keys for JSON based formats no longer include leading dot. The strings are adjusted during the database migration, but external components might need adjustment in case you rely on keys in exports or API.
+* The Celery configuration was changed to no longer use ``memory`` queue. Please adjust your startup scripts and ``CELERY_TASK_ROUTES`` setting.
+* The Weblate domain is now configured in the settings, see :setting:`SITE_DOMAIN` (or :envvar:`WEBLATE_SITE_DOMAIN`). You will have to configure it before running Weblate.
+* The username and email fields on user database now should be case insensitive unique. It was mistakenly not enforced with PostgreSQL.
 
-If you have some monolingual translations, Weblate now allows to edit template
-(source) strings as well. To see them, you need to reload translations, what
-will either happen automatically on next repository update or you can force it
-manually:
+.. seealso:: :ref:`generic-upgrade-instructions`
 
-.. code-block:: sh
-
-    ./manage.py loadpo --all
-
-.. seealso::
-
-    If you are upgrading to Django 1.7 in same step, please consult
-    :ref:`django-17`.
-
-Upgrade from 2.2 to 2.3
+Upgrade from 4.2 to 4.3
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-If you have not yet performed upgrade to Django 1.7 and newer, first upgrade to
-2.2 following instructions above. Weblate 2.3 no longer supports migration from
-Django 1.6.
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
 
-If you were using Weblate 2.2 with Django 1.6, you will now need to fake some
-migrations:
+Notable configuration or dependencies changes:
 
-.. code-block:: sh
+* There are some changes in quality checks, you might want to include them in case you modified the :setting:`CHECK_LIST`.
+* The source language attribute was moved from project to a component what is exposed in the API. You will need to update :ref:`wlc` in case you are using it.
+* The database migration to 4.3 might take long depending on number of strings you are translating (expect around one hour of migration time per 100,000 source strings).
+* There is a change in :setting:`django:INSTALLED_APPS`.
+* There is a new setting :setting:`SESSION_COOKIE_AGE_AUTHENTICATED` which complements :setting:`django:SESSION_COOKIE_AGE`.
+* In case you were using :command:`hub` or :command:`lab` to integrate with GitHub or GitLab, you will need to reconfigure this, see :setting:`GITHUB_CREDENTIALS` and :setting:`GITLAB_CREDENTIALS`.
 
-    ./manage.py migrate --fake accounts 0004_auto_20150108_1424
-    ./manage.py migrate --fake lang 0001_initial
-    ./manage.py migrate --fake trans 0018_auto_20150213_1447
+.. versionchanged:: 4.3.1
 
-Previous Weblate releases contained bug which made some monolingual
-translations behave inconsistently for fuzzy and not translated strings, if you
-have such, it is recommended to run:
+   * The Celery configuration was changed to add ``memory`` queue. Please adjust your startup scripts and ``CELERY_TASK_ROUTES`` setting.
 
-.. code-block:: sh
+.. versionchanged:: 4.3.2
 
-    ./manage.py fixup_flags --all
+   * The ``post_update`` method of addons now takes extra ``skip_push`` parameter.
 
-Upgrade from 2.3 to 2.4
+.. seealso:: :ref:`generic-upgrade-instructions`
+
+Upgrade from 4.3 to 4.4
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Please  adjust your :file:`settings.py` to match several changes in the
-configuration (consult :file:`settings_example.py` for correct values).
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
 
-Handling of static content has been rewritten, please adjust configuration of
-your webserver accordingly (see :ref:`static-files` for more details). Most
-importantly:
+Notable configuration or dependencies changes:
 
-* ``/media/`` path is no longer used
-* ``/static/`` path now holds both admin and Weblate static files
+* There is a change in :setting:`django:INSTALLED_APPS`, ``weblate.configuration`` has to be added there.
+* Django 3.1 is now required.
+* In case you are using MySQL or MariaDB, the minimal required versions have increased, see :ref:`mysql`.
 
-There is now also additional dependency - ``django_compressor``, please install
-it prior to upgrading.
+.. versionchanged:: 4.4.1
 
-.. _django-17:
+   * :ref:`mono_gettext` now uses both ``msgid`` and ``msgctxt`` when present. This will change identification of translation strings in such files breaking links to Weblate extended data such as screenshots or review states. Please make sure you commit pending changes in such files prior upgrading and it is recommeded to force loading of affected component using :djadmin:`loadpo`.
+   * Increased minimal required version of translate-toolkit to address several file format issues.
 
-Upgrading to Django 1.7
------------------------
+.. seealso:: :ref:`generic-upgrade-instructions`
 
-Django 1.7 has a new feature to handle database schema upgrade called
-"migrations" which is incompatible with South (used before by Weblate).
+Upgrade from 4.4 to 4.5
+~~~~~~~~~~~~~~~~~~~~~~~
 
-Before migrating to Django 1.7, you first need to apply all migrations from
-South. If you already have upgraded Django to 1.7, you can do this using
-virtualenv and :file:`examples/migrate-south` script:
+Please follow :ref:`generic-upgrade-instructions` in order to perform update.
+
+Notable configuration or dependencies changes:
+
+* The migration might take considerable time if you had big glossaries.
+* Glossaries are now stored as regular components.
+* The glossary API is removed, use regular translation API to access glossaries.
+* There is a change in :setting:`django:INSTALLED_APPS` - ``weblate.metrics`` should be added.
+
+.. versionchanged:: 4.5.1
+
+   * There is a new dependency on the `pyahocorasick` module.
+
+.. seealso:: :ref:`generic-upgrade-instructions`
+
+.. _py3:
+
+Upgrading from Python 2 to Python 3
+-----------------------------------
+
+Weblate no longer supports Python older than 3.5. In case you are still running
+on older version, please perform migration to Python 3 first on existing
+version and upgrade later. See `Upgrading from Python 2 to Python 3 in the Weblate
+3.11.1 documentation
+<https://docs.weblate.org/en/weblate-3.11.1/admin/upgrade.html#upgrading-from-python-2-to-python-3>`_.
+
+.. _database-migration:
+
+Migrating from other databases to PostgreSQL
+--------------------------------------------
+
+If you are running Weblate on other dabatase than PostgreSQL, you should
+migrate to PostgreSQL as that will be the only supported database backend in
+the 4.0 release. The following steps will guide you in migrating your data
+between the databases. Please remember to stop both web and Celery servers
+prior to the migration, otherwise you might end up with inconsistent data.
+
+Creating a database in PostgreSQL
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is usually a good idea to run Weblate in a separate database, and separate user account:
 
 .. code-block:: sh
 
-    examples/migrate-south --settings weblate.settings
+    # If PostgreSQL was not installed before, set the main password
+    sudo -u postgres psql postgres -c "\password postgres"
 
-Once you have done that, you can run Django migrations and work as usual. For
-the initial setup, you might need to fake some of the migrations though:
+    # Create a database user called "weblate"
+    sudo -u postgres createuser -D -P weblate
+
+    # Create the database "weblate" owned by "weblate"
+    sudo -u postgres createdb -O weblate weblate
+
+Migrating using Django JSON dumps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The simplest approach for migration is to utilize Django JSON dumps. This works well for smaller installations. On bigger sites you might want to use pgloader instead, see :ref:`pgloader-migration`.
+
+1. Add PostgreSQL as additional database connection to the :file:`settings.py`:
+
+.. code-block:: python
+
+    DATABASES = {
+        "default": {
+            # Database engine
+            "ENGINE": "django.db.backends.mysql",
+            # Database name
+            "NAME": "weblate",
+            # Database user
+            "USER": "weblate",
+            # Database password
+            "PASSWORD": "password",
+            # Set to empty string for localhost
+            "HOST": "database.example.com",
+            # Set to empty string for default
+            "PORT": "",
+            # Additional database options
+            "OPTIONS": {
+                # In case of using an older MySQL server, which has MyISAM as a default storage
+                # 'init_command': 'SET storage_engine=INNODB',
+                # Uncomment for MySQL older than 5.7:
+                # 'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+                # If your server supports it, see the Unicode issues above
+                "charset": "utf8mb4",
+                # Change connection timeout in case you get MySQL gone away error:
+                "connect_timeout": 28800,
+            },
+        },
+        "postgresql": {
+            # Database engine
+            "ENGINE": "django.db.backends.postgresql",
+            # Database name
+            "NAME": "weblate",
+            # Database user
+            "USER": "weblate",
+            # Database password
+            "PASSWORD": "password",
+            # Set to empty string for localhost
+            "HOST": "database.example.com",
+            # Set to empty string for default
+            "PORT": "",
+        },
+    }
+
+2. Run migrations and drop any data inserted into the tables:
 
 .. code-block:: sh
 
-    ./manage.py migrate --fake-initial
+   weblate migrate --database=postgresql
+   weblate sqlflush --database=postgresql | weblate dbshell --database=postgresql
+
+3. Dump legacy database and import to PostgreSQL
+
+.. code-block:: sh
+
+   weblate dumpdata --all --output weblate.json
+   weblate loaddata weblate.json --database=postgresql
+
+4. Adjust :setting:`django:DATABASES` to use just PostgreSQL database as default,
+   remove legacy connection.
+
+Weblate should be now ready to run from the PostgreSQL database.
+
+.. _pgloader-migration:
+
+Migrating to PostgreSQL using pgloader
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The `pgloader`_ is a generic migration tool to migrate data to PostgreSQL. You can use it to migrate Weblate database.
+
+1. Adjust your :file:`settings.py` to use PostgreSQL as a database.
+
+2. Migrate the schema in the PostgreSQL database:
+
+   .. code-block:: sh
+
+       weblate migrate
+       weblate sqlflush | weblate dbshell
+
+3. Run the pgloader to transfer the data. The following script can be used to migrate the database, but you might want to learn more about `pgloader`_ to understand what it does and tweak it to match your setup:
+
+   .. code-block:: postgresql
+
+       LOAD DATABASE
+            FROM      mysql://weblate:password@localhost/weblate
+            INTO postgresql://weblate:password@localhost/weblate
+
+       WITH include no drop, truncate, create no tables, create no indexes, no foreign keys, disable triggers, reset sequences, data only
+
+       ALTER SCHEMA 'weblate' RENAME TO 'public'
+       ;
+
+
+.. _pgloader: https://pgloader.io/
 
 .. _pootle-migration:
 
@@ -311,8 +354,5 @@ Migrating from Pootle
 ---------------------
 
 As Weblate was originally written as replacement from Pootle, it is supported
-to migrate user accounts from Pootle. All you need to do is to copy
-``auth_user`` table from Pootle, user profiles will be automatically created
-for users as they log in and they will be asked to update their settings.
-Alternatively you can use :djadmin:`importusers` to import dumped user
-credentials.
+to migrate user accounts from Pootle. You can dump the users from Pootle and
+import them using :djadmin:`importusers`.

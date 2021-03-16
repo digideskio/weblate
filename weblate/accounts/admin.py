@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,53 +14,37 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.contrib import admin
-from weblate.accounts.models import Profile, VerifiedEmail
-from django.contrib.auth.admin import UserAdmin
-from django.contrib.auth.models import User
+from weblate.wladmin.models import WeblateModelAdmin
 
 
-class ProfileAdmin(admin.ModelAdmin):
-    list_display = [
-        'user', 'full_name', 'language', 'suggested', 'translated'
-    ]
-    search_fields = [
-        'user__username', 'user__email', 'user__first_name'
-    ]
-    list_filter = ['language']
+class AuditLogAdmin(WeblateModelAdmin):
+    list_display = ["get_message", "user", "address", "user_agent", "timestamp"]
+    search_fields = ["user__username", "user__email", "address", "activity"]
+    date_hierarchy = "timestamp"
+    ordering = ("-timestamp",)
 
-admin.site.register(Profile, ProfileAdmin)
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
-class VerifiedEmailAdmin(admin.ModelAdmin):
-    list_display = ('social', 'email')
-    search_fields = (
-        'email', 'social__user__username', 'social__user__email'
-    )
-    raw_id_fields = ('social',)
+class ProfileAdmin(WeblateModelAdmin):
+    list_display = ["user", "full_name", "language", "suggested", "translated"]
+    search_fields = ["user__username", "user__email", "user__full_name"]
+    list_filter = ["language"]
+    filter_horizontal = ("languages", "secondary_languages", "watched")
 
-admin.site.register(VerifiedEmail, VerifiedEmailAdmin)
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
-class WeblateUserAdmin(UserAdmin):
-    '''
-    Custom UserAdmin to add listing of group membership and whether user is
-    active.
-    '''
-    list_display = UserAdmin.list_display + ('is_active', 'user_groups', 'id')
-    list_filter = UserAdmin.list_filter + ('groups',)
+class VerifiedEmailAdmin(WeblateModelAdmin):
+    list_display = ("social", "provider", "email")
+    search_fields = ("email", "social__user__username", "social__user__email")
+    raw_id_fields = ("social",)
+    ordering = ("email",)
 
-    def user_groups(self, obj):
-        """
-        Get group, separate by comma, and display empty string if user has
-        no group
-        """
-        return ','.join([g.name for g in obj.groups.all()])
-
-# Need to unregister orignal Django UserAdmin
-admin.site.unregister(User)
-# Set WeblateUserAdmin to handle User in admin interface
-admin.site.register(User, WeblateUserAdmin)
+    def has_delete_permission(self, request, obj=None):
+        return False

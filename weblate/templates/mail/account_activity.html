@@ -1,0 +1,40 @@
+{% extends "mail/base.html" %}
+
+{% load i18n %}{% load translations %}
+
+{% block content %}
+<p>
+{% blocktrans %}There has been a following change in your account at {{ site_title }}:{% endblocktrans %}
+</p>
+
+<p>
+{{ message }}
+</p>
+
+{% if extra_message %}
+<p>
+{{ extra_message }}
+</p>
+{% endif %}
+
+<table>
+<tr>
+<td>{% trans "IP address" %}</td>
+<td>{{ address }}</td>
+</tr>
+<tr>
+<td>{% trans "User agent" %}</td>
+<td>{{ user_agent }}</td>
+</tr>
+</table>
+
+<p>
+{% blocktrans %}If you don’t recognize this change, you can report it by clicking the button below.{% endblocktrans %}
+<b>{% blocktrans %}Don’t use this button for support questions. Such questions won’t be answered.{% endblocktrans %}</b>
+</p>
+
+<div class="line buttons">
+<a class="button" href="{% url 'contact' %}?t=account">{% trans "Report" %}</a>
+</p>
+
+{% endblock %}

@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,52 +14,32 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.contrib.sitemaps import GenericSitemap, Sitemap
-from django.core.urlresolvers import reverse
-from weblate.trans.models import Project, SubProject, Translation, Change
-from weblate.accounts.models import Profile
+from django.contrib.sitemaps import Sitemap
+from django.urls import reverse
 
-PROJECT_DICT = {
-    'queryset': Project.objects.all_acl(None),
-    'date_field': 'last_change',
-}
-
-SUBPROJECT_DICT = {
-    'queryset': SubProject.objects.filter(
-        project__in=Project.objects.all_acl(None)
-    ),
-    'date_field': 'last_change',
-}
-
-TRANSLATION_DICT = {
-    'queryset': Translation.objects.filter(
-        subproject__project__in=Project.objects.all_acl(None)
-    ),
-    'date_field': 'last_change',
-}
-
-USER_DICT = {
-    'queryset': Profile.objects.all(),
-    'date_field': 'last_change',
-}
+from weblate.trans.models import Change, Component, Project, Translation
+from weblate.utils.stats import prefetch_stats
 
 
 class PagesSitemap(Sitemap):
     def items(self):
         return (
-            ('/', 1.0, 'daily'),
-            ('/about/', 0.8, 'daily'),
-            ('/contact/', 0.2, 'monthly'),
+            ("/", 1.0, "daily"),
+            ("/about/", 0.4, "weekly"),
+            ("/keys/", 0.4, "weekly"),
         )
 
-    def location(self, item):
-        return item[0]
+    def location(self, obj):
+        return obj[0]
 
     def lastmod(self, item):
-        return Change.objects.all()[0].timestamp
+        try:
+            return Change.objects.values_list("timestamp", flat=True).order()[0]
+        except Change.DoesNotExist:
+            return None
 
     def priority(self, item):
         return item[1]
@@ -69,43 +48,88 @@ class PagesSitemap(Sitemap):
         return item[2]
 
 
-class EngageSitemap(GenericSitemap):
-    '''
-    Wrapper around GenericSitemap to point to engage page.
-    '''
-    def location(self, obj):
-        return reverse('engage', kwargs={'project': obj.slug})
-
-
-class EngageLangSitemap(Sitemap):
-    '''
-    Wrapper to generate sitemap for all per language engage pages.
-    '''
-    priority = 0.9
+class WeblateSitemap(Sitemap):
+    priority = 0.0
+    changefreq = None
 
     def items(self):
-        '''
-        Return list of existing project, langauge tuples.
-        '''
-        ret = []
-        for project in Project.objects.all_acl(None):
-            for lang in project.get_languages():
-                ret.append((project, lang))
-        return ret
+        raise NotImplementedError()
 
-    def location(self, item):
-        return reverse(
-            'engage-lang',
-            kwargs={'project': item[0].slug, 'lang': item[1].code}
+    def lastmod(self, item):
+        return item.stats.last_changed
+
+
+class ProjectSitemap(WeblateSitemap):
+    priority = 0.8
+
+    def items(self):
+        return prefetch_stats(
+            Project.objects.filter(access_control__lt=Project.ACCESS_PRIVATE).order_by(
+                "id"
+            )
         )
 
 
+class ComponentSitemap(WeblateSitemap):
+    priority = 0.6
+
+    def items(self):
+        return prefetch_stats(
+            Component.objects.prefetch_related("project")
+            .filter(project__access_control__lt=Project.ACCESS_PRIVATE)
+            .order_by("id")
+        )
+
+
+class TranslationSitemap(WeblateSitemap):
+    priority = 0.2
+
+    def items(self):
+        return prefetch_stats(
+            Translation.objects.prefetch_related(
+                "component",
+                "component__project",
+                "language",
+            )
+            .filter(component__project__access_control__lt=Project.ACCESS_PRIVATE)
+            .order_by("id")
+        )
+
+
+class EngageSitemap(ProjectSitemap):
+    """Wrapper around ProjectSitemap to point to engage page."""
+
+    priority = 1.0
+
+    def location(self, obj):
+        return reverse("engage", kwargs={"project": obj.slug})
+
+
+class EngageLangSitemap(Sitemap):
+    """Wrapper to generate sitemap for all per language engage pages."""
+
+    priority = 0.9
+
+    def items(self):
+        """Return list of existing project, language tuples."""
+        ret = []
+        projects = Project.objects.filter(
+            access_control__lt=Project.ACCESS_PRIVATE
+        ).order_by("id")
+        for project in projects:
+            for lang in project.languages:
+                ret.append((project, lang))
+        return ret
+
+    def location(self, obj):
+        return reverse("engage", kwargs={"project": obj[0].slug, "lang": obj[1].code})
+
+
 SITEMAPS = {
-    'project': GenericSitemap(PROJECT_DICT, priority=0.8),
-    'engage': EngageSitemap(PROJECT_DICT, priority=1.0),
-    'engagelang': EngageLangSitemap(),
-    'subproject': GenericSitemap(SUBPROJECT_DICT, priority=0.6),
-    'translation': GenericSitemap(TRANSLATION_DICT, priority=0.2),
-    'user': GenericSitemap(USER_DICT, priority=0.1),
-    'pages': PagesSitemap(),
+    "project": ProjectSitemap(),
+    "engage": EngageSitemap(),
+    "engagelang": EngageLangSitemap(),
+    "component": ComponentSitemap(),
+    "translation": TranslationSitemap(),
+    "pages": PagesSitemap(),
 }

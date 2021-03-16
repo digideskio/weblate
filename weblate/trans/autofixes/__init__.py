@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,27 +14,24 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-'''
-Import all the autofixes defined in settings.  Note, unlike checks, using
-a sortable data object so fixes are applied in desired order.
-'''
+"""Import all the autofixes defined in settings.
 
-from weblate import appsettings
-from weblate.trans.util import load_class
+Note, unlike checks, using a sortable data object so fixes are applied in desired order.
+"""
 
-autofixes = []
-for path in appsettings.AUTOFIX_LIST:
-    autofixes.append(load_class(path, 'AUTOFIX_LIST')())
+from weblate.utils.classloader import ClassLoader
+
+AUTOFIXES = ClassLoader("AUTOFIX_LIST")
 
 
 def fix_target(target, unit):
-    '''
-    Apply each autofix to the target translation.
-    '''
+    """Apply each autofix to the target translation."""
+    if target == []:
+        return target, []
     fixups = []
-    for fix in autofixes:
+    for _unused, fix in AUTOFIXES.items():
         target, fixed = fix.fix_target(target, unit)
         if fixed:
             fixups.append(fix.name)

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if ! git diff --exit-code --quiet ; then
+    echo "There are not committed changes!"
+    exit 1
+fi
+
+. scripts/test-database
+version=$(python -c 'import weblate.utils.version; print(weblate.utils.version.VERSION_BASE)')
+today=$(./manage.py shell -c 'from django.utils.dateformat import format; import datetime; print(format(datetime.date.today(), "F dS Y"))')
+
+sed -i "s/^VERSION =.*/VERSION = \"$version\"/" weblate/utils/version.py
+sed -i "s/^Not yet released./Released on $today./" docs/changes.rst
+
+if ! git diff --exit-code --quiet ; then
+    git commit -m "Releasing $version" -- weblate/utils/version.py docs/changes.rst
+fi

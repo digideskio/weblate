@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,66 +14,76 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-"""
-Provides user friendly names for social authentication methods.
-"""
+"""Provide user friendly names for social authentication methods."""
+
 from django import template
+from django.conf import settings
+from django.contrib.staticfiles.storage import staticfiles_storage
 from django.utils.safestring import mark_safe
+from django.utils.translation import gettext_lazy
 
 register = template.Library()
 
 SOCIALS = {
-    'amazon': {'name': 'Amazon', 'fa_icon': 'amazon'},
-    'google': {'name': 'Google', 'fa_icon': 'google'},
-    'google-oauth2': {'name': 'Google', 'fa_icon': 'google'},
-    'google-plus': {'name': 'Google+', 'fa_icon': 'google-plus'},
-    'github': {'name': 'GitHub', 'fa_icon': 'github'},
-    'github-enterprise': {'name': 'GitHub Enterprise', 'fa_icon': 'github'},
-    'bitbucket': {'name': 'Bitbucket', 'fa_icon': 'bitbucket'},
-    'bitbucket-oauth2': {'name': 'Bitbucket', 'fa_icon': 'bitbucket'},
-    'coinbase': {'name': 'Coinbase', 'fa_icon': 'bitcoin'},
-    'email': {'name': 'Email', 'fa_icon': 'at'},
-    'opensuse': {'name': 'openSUSE', 'fl_icon': 'opensuse'},
-    'ubuntu': {'name': 'Ubuntu', 'fl_icon': 'ubuntu'},
-    'fedora': {'name': 'Fedora', 'fl_icon': 'fedora'},
-    'facebook': {'name': 'Facebook', 'fa_icon': 'facebook'},
-    'twitter': {'name': 'Twitter', 'fa_icon': 'twitter'},
-    'stackoverflow': {'name': 'Stack Overflow', 'fa_icon': 'stackoverflow'},
+    "auth0": {
+        "name": settings.SOCIAL_AUTH_AUTH0_TITLE,
+        "image": settings.SOCIAL_AUTH_AUTH0_IMAGE,
+    },
+    "saml": {
+        "name": settings.SOCIAL_AUTH_SAML_TITLE,
+        "image": settings.SOCIAL_AUTH_SAML_IMAGE,
+    },
+    "google": {"name": "Google", "image": "google.svg"},
+    "google-oauth2": {"name": "Google", "image": "google.svg"},
+    "google-plus": {"name": "Google+", "image": "google.svg"},
+    "password": {"name": gettext_lazy("Password"), "image": "password.svg"},
+    "email": {"name": gettext_lazy("E-mail"), "image": "email.svg"},
+    "ubuntu": {"name": "Ubuntu", "image": "ubuntu.svg"},
+    "opensuse": {"name": "openSUSE", "image": "opensuse.svg"},
+    "fedora": {"name": "Fedora", "image": "fedora.svg"},
+    "facebook": {"name": "Facebook", "image": "facebook.svg"},
+    "github": {"name": "GitHub", "image": "github.svg"},
+    "github-enterprise": {"name": "GitHub Enterprise", "image": "github.svg"},
+    "bitbucket": {"name": "Bitbucket", "image": "bitbucket.svg"},
+    "bitbucket-oauth2": {"name": "Bitbucket", "image": "bitbucket.svg"},
+    "azuread-oauth2": {"name": "Azure", "image": "azure.svg"},
+    "azuread-tenant-oauth2": {"name": "Azure", "image": "azure.svg"},
+    "gitlab": {"name": "GitLab", "image": "gitlab.svg"},
+    "amazon": {"name": "Amazon", "image": "amazon.svg"},
+    "twitter": {"name": "Twitter", "image": "twitter.svg"},
+    "stackoverflow": {"name": "Stack Overflow", "image": "stackoverflow.svg"},
 }
 
-FA_SOCIAL_TEMPLATE = u'''
-<i class="fa fa-lg {extra_class} fa-wl-social fa-{fa_icon}"></i>
+IMAGE_SOCIAL_TEMPLATE = """
+<img class="auth-image" src="{image}" />
+"""
+
+SOCIAL_TEMPLATE = """
+{icon}
 {separator}
 {name}
-'''
-FL_SOCIAL_TEMPLATE = u'''
-<span class="fl fa-lg {extra_class} fl-{fl_icon}"></span>
-{separator}
-{name}
-'''
+"""
 
 
 @register.simple_tag
-def auth_name(auth, extra_class='fa-4x', separator='<br />'):
-    """
-    Creates HTML markup for social authentication method.
-    """
-
-    params = {
-        'name': auth,
-        'extra_class': extra_class,
-        'separator': separator,
-        'fa_icon': 'key',
-    }
+def auth_name(auth, separator="<br />"):
+    """Create HTML markup for social authentication method."""
+    params = {"name": auth, "separator": separator, "image": "password.svg"}
 
     if auth in SOCIALS:
         params.update(SOCIALS[auth])
 
-    if 'fl_icon' in params:
-        html_template = FL_SOCIAL_TEMPLATE
-    else:
-        html_template = FA_SOCIAL_TEMPLATE
+    if not params["image"].startswith("http"):
+        params["image"] = staticfiles_storage.url("auth/" + params["image"])
+    params["icon"] = IMAGE_SOCIAL_TEMPLATE.format(**params)
 
-    return mark_safe(html_template.format(**params))
+    return mark_safe(SOCIAL_TEMPLATE.format(**params))
+
+
+def get_auth_name(auth):
+    """Get nice name for authentication backend."""
+    if auth in SOCIALS:
+        return SOCIALS[auth]["name"]
+    return auth

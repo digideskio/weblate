@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,109 +14,35 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from django.core.management.base import BaseCommand
-from weblate.trans.models import Suggestion, Comment, Check, Unit, Project
-from weblate.lang.models import Language
 from django.db import transaction
+
+from weblate.accounts.tasks import cleanup_social_auth
+from weblate.screenshots.tasks import cleanup_screenshot_files
+from weblate.trans.models import Project
+from weblate.trans.tasks import (
+    cleanup_old_comments,
+    cleanup_old_suggestions,
+    cleanup_project,
+    cleanup_stale_repos,
+    cleanup_suggestions,
+)
+from weblate.utils.management.base import BaseCommand
 
 
 class Command(BaseCommand):
-    help = 'clenups orphaned checks and suggestions'
+    help = "clenups orphaned checks and suggestions"
 
     def handle(self, *args, **options):
-        '''
-        Perfoms cleanup of Weblate database.
-        '''
-        for prj in Project.objects.all():
-            with transaction.atomic():
-
-                # List all current unit contentsums
-                units = Unit.objects.filter(
-                    translation__subproject__project=prj
-                ).values('contentsum').distinct()
-
-                # Remove source comments referring to deleted units
-                Comment.objects.filter(
-                    language=None,
-                    project=prj
-                ).exclude(
-                    contentsum__in=units
-                ).delete()
-
-                # Remove source checks referring to deleted units
-                Check.objects.filter(
-                    language=None,
-                    project=prj
-                ).exclude(
-                    contentsum__in=units
-                ).delete()
-
-                for lang in Language.objects.all():
-
-                    # Remove checks referring to deleted or not translated
-                    # units
-                    translatedunits = Unit.objects.filter(
-                        translation__language=lang,
-                        translated=True,
-                        translation__subproject__project=prj
-                    ).values('contentsum').distinct()
-                    Check.objects.filter(
-                        language=lang, project=prj
-                    ).exclude(
-                        contentsum__in=translatedunits
-                    ).delete()
-
-                    # List current unit contentsums
-                    units = Unit.objects.filter(
-                        translation__language=lang,
-                        translation__subproject__project=prj
-                    ).values('contentsum').distinct()
-
-                    # Remove suggestions referring to deleted units
-                    Suggestion.objects.filter(
-                        language=lang,
-                        project=prj
-                    ).exclude(
-                        contentsum__in=units
-                    ).delete()
-
-                    # Remove translation comments referring to deleted units
-                    Comment.objects.filter(
-                        language=lang,
-                        project=prj
-                    ).exclude(
-                        contentsum__in=units
-                    ).delete()
-
-                    # Process suggestions
-                    all_suggestions = Suggestion.objects.filter(
-                        language=lang,
-                        project=prj
-                    )
-                    for sug in all_suggestions.iterator():
-                        # Remove suggestions with same text as real translation
-                        units = Unit.objects.filter(
-                            contentsum=sug.contentsum,
-                            translation__language=lang,
-                            translation__subproject__project=prj,
-                            target=sug.target
-                        )
-                        if units.exists():
-                            sug.delete()
-                            for unit in units:
-                                unit.update_has_suggestion()
-
-                        # Remove duplicate suggestions
-                        sugs = Suggestion.objects.filter(
-                            contentsum=sug.contentsum,
-                            language=lang,
-                            project=prj,
-                            target=sug.target
-                        ).exclude(
-                            id=sug.id
-                        )
-                        if sugs.exists():
-                            sugs.delete()
+        """Perfom cleanup of Weblate database."""
+        cleanup_screenshot_files()
+        with transaction.atomic():
+            cleanup_social_auth()
+        for project in Project.objects.values_list("id", flat=True):
+            cleanup_project(project)
+        cleanup_suggestions()
+        cleanup_stale_repos()
+        cleanup_old_suggestions()
+        cleanup_old_comments()

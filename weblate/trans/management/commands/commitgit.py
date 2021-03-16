@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 #
-# Copyright © 2012 - 2015 Michal Čihař <michal@cihar.com>
+# Copyright © 2012 - 2021 Michal Čihař <michal@cihar.com>
 #
-# This file is part of Weblate <http://weblate.org/>
+# This file is part of Weblate <https://weblate.org/>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,18 +14,17 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-from weblate.trans.management.commands import WeblateCommand
+from weblate.trans.management.commands import WeblateComponentCommand
 
 
-class Command(WeblateCommand):
-    help = 'forces commiting changes to git repo'
+class Command(WeblateComponentCommand):
+    help = "forces committing changes to git repo"
+    needs_repo = True
 
     def handle(self, *args, **options):
-        '''
-        Commits pending translations in given projects.
-        '''
-        for subproject in self.get_subprojects(*args, **options):
-            subproject.commit_pending(None)
+        """Commit pending translations in given projects."""
+        for component in self.get_components(*args, **options):
+            component.commit_pending("manage commitgit", None)
